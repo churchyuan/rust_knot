@@ -138,7 +138,11 @@ fn main() {
                     eprintln!("frame {}: warning: {w}", r.frame);
                 }
 
-                let ktype = if r.error.is_some() { "ERROR" } else { &r.knot_type };
+                let ktype = if r.error.is_some() {
+                    "ERROR"
+                } else {
+                    &r.knot_type
+                };
                 writeln!(
                     writer,
                     "{}\t{}\t{}\t{}\t{}",

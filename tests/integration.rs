@@ -99,9 +99,7 @@ fn test_straight_line_is_unknot() {
     let table = load_table();
 
     // Generate a simple straight line — should be unknot
-    let points: Vec<rust_knot::Point3> = (0..50)
-        .map(|i| [i as f64, 0.0, 0.0])
-        .collect();
+    let points: Vec<rust_knot::Point3> = (0..50).map(|i| [i as f64, 0.0, 0.0]).collect();
 
     let config = KnotConfig {
         is_ring: false,

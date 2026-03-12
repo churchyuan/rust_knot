@@ -165,8 +165,7 @@ mod tests {
     #[test]
     fn test_process_frame_unknot() {
         let table_data = "0_1\t1\n3_1\t-1+1*t\n";
-        let table =
-            AlexanderTable::from_reader(std::io::Cursor::new(table_data)).unwrap();
+        let table = AlexanderTable::from_reader(std::io::Cursor::new(table_data)).unwrap();
         let config = KnotConfig::default();
         let pts = straight_line(50);
         let result = process_frame(0, &pts, &table, &config, None);
@@ -178,8 +177,7 @@ mod tests {
     #[test]
     fn test_process_frames_parallel_ordering() {
         let table_data = "0_1\t1\n";
-        let table =
-            AlexanderTable::from_reader(std::io::Cursor::new(table_data)).unwrap();
+        let table = AlexanderTable::from_reader(std::io::Cursor::new(table_data)).unwrap();
         let config = KnotConfig::default();
         let frames: Vec<Vec<Point3>> = (0..5).map(|_| straight_line(50)).collect();
         let results = process_frames_parallel(&frames, &table, &config, None);

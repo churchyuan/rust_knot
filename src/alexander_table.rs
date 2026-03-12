@@ -150,10 +150,7 @@ impl AlexanderTable {
             }
         }
         let neg = poly.negate();
-        self.table
-            .get(&neg)
-            .map(|v| v.as_slice())
-            .unwrap_or(&[])
+        self.table.get(&neg).map(|v| v.as_slice()).unwrap_or(&[])
     }
 
     /// Number of distinct polynomials in the table (including negations).

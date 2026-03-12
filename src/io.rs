@@ -90,9 +90,15 @@ impl<R: BufRead> Iterator for XyzFrameIter<R> {
             }
             let coords: std::result::Result<[f64; 3], _> = (|| {
                 Ok([
-                    parts[1].parse().map_err(|e| format!("bad x at line {}: {e}", i + 3))?,
-                    parts[2].parse().map_err(|e| format!("bad y at line {}: {e}", i + 3))?,
-                    parts[3].parse().map_err(|e| format!("bad z at line {}: {e}", i + 3))?,
+                    parts[1]
+                        .parse()
+                        .map_err(|e| format!("bad x at line {}: {e}", i + 3))?,
+                    parts[2]
+                        .parse()
+                        .map_err(|e| format!("bad y at line {}: {e}", i + 3))?,
+                    parts[3]
+                        .parse()
+                        .map_err(|e| format!("bad z at line {}: {e}", i + 3))?,
                 ])
             })();
             match coords {

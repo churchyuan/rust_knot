@@ -204,9 +204,8 @@ mod tests {
             [0.0, 0.7, 0.6],
         ];
 
-        let (start_ext, end_ext) =
-            hull_ends(&points, cfg.hull_plane_epsilon, cfg.extend_factor)
-                .expect("expected non-degenerate hull");
+        let (start_ext, end_ext) = hull_ends(&points, cfg.hull_plane_epsilon, cfg.extend_factor)
+            .expect("expected non-degenerate hull");
         assert!(is_finite_point(&start_ext));
         assert!(is_finite_point(&end_ext));
         assert_ne!(start_ext, points[0]);
