@@ -65,7 +65,12 @@ fn window_is_type(
     let sub: Vec<Point3> = points[l..=r].to_vec();
     match get_knottype(&sub, table, config) {
         Ok(t) => t == target,
-        Err(_) => false,
+        Err(e) => {
+            if config.debug {
+                eprintln!("debug: window_is_type [{l},{r}] failed: {e}");
+            }
+            false
+        }
     }
 }
 
@@ -85,7 +90,15 @@ fn window_knottype_open(
         is_ring: false,
         ..*config
     };
-    get_knottype(&sub, table, &open_cfg).unwrap_or_default()
+    match get_knottype(&sub, table, &open_cfg) {
+        Ok(t) => t,
+        Err(e) => {
+            if config.debug {
+                eprintln!("debug: window_knottype_open [{l},{r}] failed: {e}");
+            }
+            String::new()
+        }
+    }
 }
 
 /// Find the minimal knot core in a chain of points.
@@ -245,7 +258,7 @@ fn find_knot_core_ring(
     config: &KnotConfig,
 ) -> KnotCoreResult {
     let n = points.len() as i32;
-    let num_shifts = config.num_rotations as i32;
+    let num_shifts = (config.num_rotations as i32).max(1);
     let shift_size = n / num_shifts;
 
     let ring_cfg = KnotConfig {

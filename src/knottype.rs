@@ -50,11 +50,9 @@ fn get_knottype_open(
             }
             None => {
                 if config.debug {
-                    eprintln!("warning: hull_ends failed, falling back to head-tail closure");
-                }
-                if !working.is_empty() {
-                    let first = working[0];
-                    working.push(first);
+                    eprintln!(
+                        "warning: hull_ends failed, using infinity-closure fallback (no head-tail segment)"
+                    );
                 }
             }
         }
@@ -85,15 +83,12 @@ fn get_knottype_ring(
         return Ok("1".to_string());
     }
 
-    let first = working[0];
-    working.push(first);
+    working.push(working[0]);
 
     let result = compute_knottype_from_chain(&working, table, config.debug)?;
-
     if config.debug && result != "1" {
         eprintln!("ring knot type: {result}");
     }
-
     Ok(result)
 }
 

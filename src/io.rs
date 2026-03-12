@@ -3,6 +3,108 @@ use std::io::{BufRead, Write};
 use crate::error::{KnotError, Result};
 use crate::point::Point3;
 
+/// Lazy frame-by-frame iterator over an XYZ stream.
+/// Reads one frame at a time without loading the entire file.
+pub struct XyzFrameIter<R> {
+    reader: R,
+    line_buf: String,
+    done: bool,
+}
+
+impl<R: BufRead> XyzFrameIter<R> {
+    pub fn new(reader: R) -> Self {
+        Self {
+            reader,
+            line_buf: String::new(),
+            done: false,
+        }
+    }
+}
+
+impl<R: BufRead> Iterator for XyzFrameIter<R> {
+    type Item = Result<Vec<Point3>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.done {
+            return None;
+        }
+
+        // Find next non-empty header line (point count)
+        let n: usize = loop {
+            self.line_buf.clear();
+            match self.reader.read_line(&mut self.line_buf) {
+                Ok(0) => {
+                    self.done = true;
+                    return None;
+                }
+                Ok(_) => {}
+                Err(e) => return Some(Err(KnotError::Io(e))),
+            }
+            let trimmed = self.line_buf.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            match trimmed.parse() {
+                Ok(v) => break v,
+                Err(e) => {
+                    return Some(Err(KnotError::DataParse(format!(
+                        "invalid point count: {e}"
+                    ))))
+                }
+            }
+        };
+
+        // Skip comment line
+        self.line_buf.clear();
+        match self.reader.read_line(&mut self.line_buf) {
+            Ok(0) => {
+                return Some(Err(KnotError::DataParse(
+                    "unexpected EOF after XYZ point count".into(),
+                )))
+            }
+            Err(e) => return Some(Err(KnotError::Io(e))),
+            _ => {}
+        }
+
+        // Read n data lines
+        let mut points = Vec::with_capacity(n);
+        for i in 0..n {
+            self.line_buf.clear();
+            match self.reader.read_line(&mut self.line_buf) {
+                Ok(0) => {
+                    return Some(Err(KnotError::DataParse(format!(
+                        "unexpected EOF in XYZ data line {}",
+                        i + 1
+                    ))))
+                }
+                Err(e) => return Some(Err(KnotError::Io(e))),
+                _ => {}
+            }
+            let parts: Vec<&str> = self.line_buf.split_whitespace().collect();
+            if parts.len() < 4 {
+                return Some(Err(KnotError::DataParse(format!(
+                    "line {}: expected 'type x y z', got '{}'",
+                    i + 3,
+                    self.line_buf.trim()
+                ))));
+            }
+            let coords: std::result::Result<[f64; 3], _> = (|| {
+                Ok([
+                    parts[1].parse().map_err(|e| format!("bad x at line {}: {e}", i + 3))?,
+                    parts[2].parse().map_err(|e| format!("bad y at line {}: {e}", i + 3))?,
+                    parts[3].parse().map_err(|e| format!("bad z at line {}: {e}", i + 3))?,
+                ])
+            })();
+            match coords {
+                Ok(c) => points.push(c),
+                Err(msg) => return Some(Err(KnotError::DataParse(msg))),
+            }
+        }
+
+        Some(Ok(points))
+    }
+}
+
 /// Read points from XYZ format.
 /// Format:
 /// ```text
@@ -52,75 +154,18 @@ pub fn read_data_xyz<R: BufRead>(reader: &mut R) -> Result<Vec<Point3>> {
     Ok(points)
 }
 
-/// Read all frames from an XYZ stream.
-/// Each frame uses the standard XYZ layout:
-/// ```text
-/// N
-/// (comment line)
-/// atom_type  x  y  z
-/// ...
-/// ```
-/// Returns an empty vector for empty input.
+/// Read all frames from an XYZ stream into memory.
+/// For large files prefer `XyzFrameIter` with batched processing.
 pub fn read_data_xyz_frames<R: BufRead>(reader: &mut R) -> Result<Vec<Vec<Point3>>> {
+    // Delegate to iterator — avoids duplicated parsing logic
     let mut frames = Vec::new();
-    let mut line = String::new();
-
-    loop {
-        // Find the next non-empty frame header line (point count).
-        let n = loop {
-            line.clear();
-            let bytes = reader.read_line(&mut line).map_err(KnotError::Io)?;
-            if bytes == 0 {
-                return Ok(frames);
-            }
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            break trimmed
-                .parse::<usize>()
-                .map_err(|e| KnotError::DataParse(format!("invalid point count: {e}")))?;
-        };
-
-        // Skip comment line
-        line.clear();
-        if reader.read_line(&mut line).map_err(KnotError::Io)? == 0 {
-            return Err(KnotError::DataParse(
-                "unexpected EOF after XYZ point count".into(),
-            ));
-        }
-
-        let mut points = Vec::with_capacity(n);
-        for i in 0..n {
-            line.clear();
-            if reader.read_line(&mut line).map_err(KnotError::Io)? == 0 {
-                return Err(KnotError::DataParse(format!(
-                    "unexpected EOF in XYZ data line {}",
-                    i + 1
-                )));
-            }
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() < 4 {
-                return Err(KnotError::DataParse(format!(
-                    "line {}: expected 'type x y z', got '{}'",
-                    i + 3,
-                    line.trim()
-                )));
-            }
-            let x: f64 = parts[1]
-                .parse()
-                .map_err(|e| KnotError::DataParse(format!("bad x at line {}: {e}", i + 3)))?;
-            let y: f64 = parts[2]
-                .parse()
-                .map_err(|e| KnotError::DataParse(format!("bad y at line {}: {e}", i + 3)))?;
-            let z: f64 = parts[3]
-                .parse()
-                .map_err(|e| KnotError::DataParse(format!("bad z at line {}: {e}", i + 3)))?;
-            points.push([x, y, z]);
-        }
-
-        frames.push(points);
+    // Take ownership via a wrapper that implements BufRead
+    // Since we have &mut R, construct iterator over it
+    let iter = XyzFrameIter::new(reader);
+    for result in iter {
+        frames.push(result?);
     }
+    Ok(frames)
 }
 
 /// Read points from LAMMPS dump format.

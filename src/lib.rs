@@ -13,7 +13,7 @@ pub mod polynomial;
 
 // Re-export primary public API
 pub use alexander_table::AlexanderTable;
-pub use batch::{process_frame, process_frames_parallel, FrameResult};
+pub use batch::{process_frame, process_frames_parallel, process_frames_streaming, FrameResult};
 pub use config::KnotConfig;
 pub use error::{KnotError, Result};
 pub use knotsize::{find_knot_core, KnotCoreResult};

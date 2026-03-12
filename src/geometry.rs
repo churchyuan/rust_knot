@@ -201,6 +201,8 @@ pub fn find_max_span(points: &mut [Point3]) {
 }
 
 /// Map a line segment index to the arc-segment index.
+/// For segments beyond all entries in `segment`, returns `offset + segment.len()`
+/// to handle ring chain wrap-around (the modular arithmetic at call sites handles the rest).
 ///
 /// Ports: my_function.cpp get_segment (lines 144-154)
 pub fn get_segment(segment: &[usize], offset: usize, line_segment: usize) -> usize {
@@ -209,7 +211,7 @@ pub fn get_segment(segment: &[usize], offset: usize, line_segment: usize) -> usi
             return offset + i;
         }
     }
-    0
+    offset + segment.len()
 }
 
 #[cfg(test)]

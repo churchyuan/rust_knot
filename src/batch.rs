@@ -1,7 +1,10 @@
+use std::io::BufRead;
+
 use rayon::prelude::*;
 
 use crate::alexander_table::AlexanderTable;
 use crate::config::KnotConfig;
+use crate::io::XyzFrameIter;
 use crate::knotsize::find_knot_core;
 use crate::knottype::get_knottype;
 use crate::point::Point3;
@@ -15,6 +18,8 @@ pub struct FrameResult {
     pub knot_end: i32,
     pub knot_size: i32,
     pub error: Option<String>,
+    /// Non-fatal warnings (e.g. knot core search failed but type was identified).
+    pub warnings: Vec<String>,
 }
 
 /// Process a single frame: identify knot type, then find knot core.
@@ -38,9 +43,12 @@ pub fn process_frame(
                 knot_end: -1,
                 knot_size: 0,
                 error: Some(e.to_string()),
+                warnings: Vec::new(),
             };
         }
     };
+
+    let mut warnings = Vec::new();
 
     let (start, end, size) = if knot_type == "1" {
         (-1, -1, 0)
@@ -48,7 +56,14 @@ pub fn process_frame(
         let search = target_type.unwrap_or(&knot_type);
         match find_knot_core(points, search, table, config) {
             Ok(core) if core.matched => (core.left, core.right, core.size),
-            _ => (-1, -1, 0),
+            Ok(_) => {
+                warnings.push(format!("knot core not found for type '{search}'"));
+                (-1, -1, 0)
+            }
+            Err(e) => {
+                warnings.push(format!("knot core search failed: {e}"));
+                (-1, -1, 0)
+            }
         }
     };
 
@@ -59,6 +74,7 @@ pub fn process_frame(
         knot_end: end,
         knot_size: size,
         error: None,
+        warnings,
     }
 }
 
@@ -73,6 +89,67 @@ pub fn process_frames_parallel(
         .par_iter()
         .enumerate()
         .map(|(i, points)| process_frame(i, points, table, config, target_type))
+        .collect()
+}
+
+/// Default batch size for streaming processing.
+const DEFAULT_BATCH_SIZE: usize = 64;
+
+/// Streaming batch processor: reads `batch_size` frames at a time from an XYZ
+/// reader, processes each batch in parallel, and calls `on_batch` with results.
+///
+/// Memory usage is bounded to `batch_size * points_per_frame`.
+/// Returns total number of frames processed.
+pub fn process_frames_streaming<R, F>(
+    reader: R,
+    table: &AlexanderTable,
+    config: &KnotConfig,
+    target_type: Option<&str>,
+    batch_size: Option<usize>,
+    mut on_batch: F,
+) -> crate::error::Result<usize>
+where
+    R: BufRead,
+    F: FnMut(&[FrameResult]),
+{
+    let batch_size = batch_size.unwrap_or(DEFAULT_BATCH_SIZE);
+    let mut frame_offset = 0usize;
+    let mut batch = Vec::with_capacity(batch_size);
+    let iter = XyzFrameIter::new(reader);
+
+    for result in iter {
+        let points = result?;
+        batch.push(points);
+
+        if batch.len() >= batch_size {
+            let results = process_batch(&batch, frame_offset, table, config, target_type);
+            on_batch(&results);
+            frame_offset += batch.len();
+            batch.clear();
+        }
+    }
+
+    // Process remaining frames
+    if !batch.is_empty() {
+        let results = process_batch(&batch, frame_offset, table, config, target_type);
+        on_batch(&results);
+        frame_offset += batch.len();
+    }
+
+    Ok(frame_offset)
+}
+
+fn process_batch(
+    batch: &[Vec<Point3>],
+    offset: usize,
+    table: &AlexanderTable,
+    config: &KnotConfig,
+    target_type: Option<&str>,
+) -> Vec<FrameResult> {
+    batch
+        .par_iter()
+        .enumerate()
+        .map(|(i, points)| process_frame(offset + i, points, table, config, target_type))
         .collect()
 }
 
