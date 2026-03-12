@@ -1,6 +1,7 @@
 use crate::alexander_table::AlexanderTable;
+use crate::config::KnotConfig;
 use crate::error::Result;
-use crate::knottype::{get_knottype, get_knottype_ring, KnotOptions};
+use crate::knottype::get_knottype;
 use crate::point::Point3;
 
 #[derive(Clone, Debug)]
@@ -29,23 +30,7 @@ impl Default for KnotCoreResult {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct KnotSizeOptions {
-    pub is_ring: bool,
-    pub knottype_options: KnotOptions,
-}
-
-impl Default for KnotSizeOptions {
-    fn default() -> Self {
-        KnotSizeOptions {
-            is_ring: false,
-            knottype_options: KnotOptions::default(),
-        }
-    }
-}
-
 /// Parse a knot name like "3_1" into (crossing_number, index).
-/// Returns None for the unknot "1" or unparseable names.
 fn parse_knot_name(name: &str) -> Option<(u32, u32)> {
     let parts: Vec<&str> = name.split('_').collect();
     if parts.len() != 2 {
@@ -57,7 +42,6 @@ fn parse_knot_name(name: &str) -> Option<(u32, u32)> {
 }
 
 /// Returns true if knot `a` is at least as complex as knot `b`.
-/// Compares by crossing number first, then by index.
 /// Bug fix: C++ used character comparison which failed for "10_1" vs "3_1".
 fn knot_at_least_as_complex(a: &str, b: &str) -> bool {
     match (parse_knot_name(a), parse_knot_name(b)) {
@@ -73,64 +57,55 @@ fn window_is_type(
     r: usize,
     target: &str,
     table: &AlexanderTable,
-    is_ring: bool,
-    opts: &KnotOptions,
+    config: &KnotConfig,
 ) -> bool {
     if r < l || r >= points.len() {
         return false;
     }
     let sub: Vec<Point3> = points[l..=r].to_vec();
-    let result = if is_ring {
-        get_knottype_ring(&sub, table, opts)
-    } else {
-        get_knottype(&sub, table, opts)
-    };
-    match result {
+    match get_knottype(&sub, table, config) {
         Ok(t) => t == target,
         Err(_) => false,
     }
 }
 
-/// Get knot type for a sub-window (returns empty string on error).
-fn window_knottype(
+/// Get knot type for a sub-window as open chain (returns empty string on error).
+fn window_knottype_open(
     points: &[Point3],
     l: usize,
     r: usize,
     table: &AlexanderTable,
-    opts: &KnotOptions,
+    config: &KnotConfig,
 ) -> String {
     if r < l || r >= points.len() {
         return String::new();
     }
     let sub: Vec<Point3> = points[l..=r].to_vec();
-    get_knottype(&sub, table, opts).unwrap_or_default()
+    let open_cfg = KnotConfig {
+        is_ring: false,
+        ..*config
+    };
+    get_knottype(&sub, table, &open_cfg).unwrap_or_default()
 }
 
 /// Find the minimal knot core in a chain of points.
 ///
-/// For open chains: binary search min right boundary, then max left boundary.
-/// For rings: try 4 rotations, apply open-chain search on each.
-///
-/// Ports: knotsize.cpp with bug fixes for knot name comparison.
+/// Uses `config.is_ring` to select open-chain or ring-mode search.
+/// Uses `config.num_rotations` for ring rotation count.
 pub fn find_knot_core(
     points: &[Point3],
     target: &str,
     table: &AlexanderTable,
-    options: &KnotSizeOptions,
+    config: &KnotConfig,
 ) -> Result<KnotCoreResult> {
     if points.is_empty() {
         return Ok(KnotCoreResult::default());
     }
 
-    if !options.is_ring {
-        Ok(find_knot_core_open(
-            points,
-            target,
-            table,
-            &options.knottype_options,
-        ))
+    if !config.is_ring {
+        Ok(find_knot_core_open(points, target, table, config))
     } else {
-        Ok(find_knot_core_ring(points, target, table, options))
+        Ok(find_knot_core_ring(points, target, table, config))
     }
 }
 
@@ -138,13 +113,19 @@ fn find_knot_core_open(
     points: &[Point3],
     target: &str,
     table: &AlexanderTable,
-    opts: &KnotOptions,
+    config: &KnotConfig,
 ) -> KnotCoreResult {
     let mut res = KnotCoreResult::default();
     let n = points.len() as i32;
 
+    // Use open-chain config for all sub-window checks
+    let open_cfg = KnotConfig {
+        is_ring: false,
+        ..*config
+    };
+
     // Verify full sequence matches target
-    if !window_is_type(points, 0, (n - 1) as usize, target, table, false, opts) {
+    if !window_is_type(points, 0, (n - 1) as usize, target, table, &open_cfg) {
         return res;
     }
 
@@ -153,13 +134,13 @@ fn find_knot_core_open(
     let mut right = n - 1;
     while left < right {
         let mid = (left + right) / 2;
-        if window_is_type(points, 0, mid as usize, target, table, false, opts) {
+        if window_is_type(points, 0, mid as usize, target, table, &open_cfg) {
             right = mid;
         } else {
             left = mid + 1;
         }
     }
-    let mut knot_right = left + 1; // 1-based
+    let mut knot_right = left + 1;
 
     // Binary search for maximum left boundary
     left = 0;
@@ -172,19 +153,17 @@ fn find_knot_core_open(
             (n - 1) as usize,
             target,
             table,
-            false,
-            opts,
+            &open_cfg,
         ) {
             left = mid;
         } else {
             right = mid;
         }
     }
-    let mut knot_left = left + 1; // 1-based
+    let mut knot_left = left + 1;
 
     // Handle slipknot case
     if knot_left >= knot_right {
-        // Fix knot_left, find knot_right_temp
         left = knot_left - 1;
         right = n - 1;
         while left < right - 1 {
@@ -195,8 +174,7 @@ fn find_knot_core_open(
                 mid as usize,
                 target,
                 table,
-                false,
-                opts,
+                &open_cfg,
             ) {
                 right = mid;
             } else {
@@ -205,7 +183,6 @@ fn find_knot_core_open(
         }
         let knot_right_temp = left + 1;
 
-        // Fix knot_right, find knot_left_temp
         left = 0;
         right = knot_right - 1;
         while left < right - 1 {
@@ -216,8 +193,7 @@ fn find_knot_core_open(
                 (knot_right - 1) as usize,
                 target,
                 table,
-                false,
-                opts,
+                &open_cfg,
             ) {
                 left = mid;
             } else {
@@ -226,7 +202,6 @@ fn find_knot_core_open(
         }
         let knot_left_temp = left + 1;
 
-        // Pick the smaller range
         if knot_right_temp - knot_left > knot_right - knot_left_temp {
             knot_left = knot_left_temp;
         } else {
@@ -243,8 +218,7 @@ fn find_knot_core_open(
             (knot_right - 1) as usize,
             target,
             table,
-            false,
-            opts,
+            &open_cfg,
         ) {
             break;
         } else if flag_left == 1 {
@@ -268,12 +242,20 @@ fn find_knot_core_ring(
     points: &[Point3],
     target: &str,
     table: &AlexanderTable,
-    options: &KnotSizeOptions,
+    config: &KnotConfig,
 ) -> KnotCoreResult {
     let n = points.len() as i32;
-    let num_shifts = 4;
+    let num_shifts = config.num_rotations as i32;
     let shift_size = n / num_shifts;
-    let opts = &options.knottype_options;
+
+    let ring_cfg = KnotConfig {
+        is_ring: true,
+        ..*config
+    };
+    let open_cfg = KnotConfig {
+        is_ring: false,
+        ..*config
+    };
 
     struct Candidate {
         left: i32,
@@ -286,7 +268,7 @@ fn find_knot_core_ring(
         let rotated = rotate_points(points, (rot * shift_size) as usize);
 
         // Verify with ring detection
-        if !window_is_type(&rotated, 0, (n - 1) as usize, target, table, true, opts) {
+        if !window_is_type(&rotated, 0, (n - 1) as usize, target, table, &ring_cfg) {
             continue;
         }
 
@@ -295,7 +277,7 @@ fn find_knot_core_ring(
         let mut right = n - 1;
         while left < right {
             let mid = (left + right) / 2;
-            if window_is_type(&rotated, 0, mid as usize, target, table, false, opts) {
+            if window_is_type(&rotated, 0, mid as usize, target, table, &open_cfg) {
                 right = mid;
             } else {
                 left = mid + 1;
@@ -314,8 +296,7 @@ fn find_knot_core_ring(
                 (n - 1) as usize,
                 target,
                 table,
-                false,
-                opts,
+                &open_cfg,
             ) {
                 left = mid;
             } else {
@@ -336,8 +317,7 @@ fn find_knot_core_ring(
                     mid as usize,
                     target,
                     table,
-                    false,
-                    opts,
+                    &open_cfg,
                 ) {
                     right = mid;
                 } else {
@@ -356,8 +336,7 @@ fn find_knot_core_ring(
                     (knot_right - 1) as usize,
                     target,
                     table,
-                    false,
-                    opts,
+                    &open_cfg,
                 ) {
                     left = mid;
                 } else {
@@ -382,8 +361,7 @@ fn find_knot_core_ring(
                 (knot_right - 1) as usize,
                 target,
                 table,
-                false,
-                opts,
+                &open_cfg,
             ) {
                 break;
             } else if flag_left == 1 {
@@ -395,7 +373,7 @@ fn find_knot_core_ring(
             }
         }
 
-        // Right tail contraction (bug fix: numeric comparison instead of char comparison)
+        // Right tail contraction
         left = knot_left - 1;
         right = knot_right - 1;
         while left < right - 1 {
@@ -406,17 +384,16 @@ fn find_knot_core_ring(
                 (knot_right - 1) as usize,
                 target,
                 table,
-                false,
-                opts,
+                &open_cfg,
             ) {
                 left = mid;
             } else {
-                let temp_type = window_knottype(
+                let temp_type = window_knottype_open(
                     &rotated,
                     mid as usize,
                     (knot_right - 1) as usize,
                     table,
-                    opts,
+                    config,
                 );
                 if knot_at_least_as_complex(&temp_type, target) {
                     left = mid;
@@ -427,7 +404,7 @@ fn find_knot_core_ring(
         }
         knot_left = left + 1;
 
-        // Left tail contraction (bug fix: numeric comparison)
+        // Left tail contraction
         left = knot_left - 1;
         right = knot_right - 1;
         while left < right - 1 {
@@ -438,17 +415,16 @@ fn find_knot_core_ring(
                 mid as usize,
                 target,
                 table,
-                false,
-                opts,
+                &open_cfg,
             ) {
                 right = mid;
             } else {
-                let temp_type = window_knottype(
+                let temp_type = window_knottype_open(
                     &rotated,
                     (knot_left - 1) as usize,
                     mid as usize,
                     table,
-                    opts,
+                    config,
                 );
                 if knot_at_least_as_complex(&temp_type, target) {
                     right = mid;
@@ -515,7 +491,6 @@ mod tests {
 
     #[test]
     fn test_knot_complexity_comparison() {
-        // Bug fix validation: 10_1 should be more complex than 3_1
         assert!(knot_at_least_as_complex("10_1", "3_1"));
         assert!(!knot_at_least_as_complex("3_1", "10_1"));
         assert!(knot_at_least_as_complex("3_1", "3_1"));

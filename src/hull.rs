@@ -1,9 +1,6 @@
 use crate::point::Point3;
 use chull::ConvexHullWrapper;
 
-const HULL_PLANE_EPSILON: f64 = 5e-3;
-const EXTEND_FACTOR: f64 = 100.0;
-
 fn vector_length(v: &[f64; 3]) -> f64 {
     (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
 }
@@ -12,11 +9,15 @@ fn vector_length(v: &[f64; 3]) -> f64 {
 /// through the convex hull. This ensures the closure doesn't interfere
 /// with the knot structure.
 ///
-/// Returns `Some((start_ext, end_ext))` — two new points to prepend/append.
-/// Returns `None` if the hull computation fails.
+/// `hull_plane_epsilon`: threshold for "point on face" detection.
+/// `extend_factor`: scale for how far endpoints are pushed outward.
 ///
-/// Ports: hull.cpp hull_ends_internal
-pub fn hull_ends(points: &[Point3]) -> Option<(Point3, Point3)> {
+/// Returns `Some((start_ext, end_ext))` or `None` on failure.
+pub fn hull_ends(
+    points: &[Point3],
+    hull_plane_epsilon: f64,
+    extend_factor: f64,
+) -> Option<(Point3, Point3)> {
     if points.len() < 4 {
         return None;
     }
@@ -60,7 +61,6 @@ pub fn hull_ends(points: &[Point3]) -> Option<(Point3, Point3)> {
     }
 
     let mut faces = Vec::new();
-    // chull returns flat list of vertex indices, every 3 consecutive indices = 1 face
     for tri in indices.chunks(3) {
         if tri.len() < 3 {
             continue;
@@ -100,7 +100,6 @@ pub fn hull_ends(points: &[Point3]) -> Option<(Point3, Point3)> {
     let first_pt = points.first()?;
     let last_pt = points.last()?;
 
-    // Find closest face to first point and last point
     let dist_to_face = |pt: &Point3, face: &Face| -> f64 {
         let d =
             pt[0] * face.normal[0] + pt[1] * face.normal[1] + pt[2] * face.normal[2] - face.offset;
@@ -119,16 +118,13 @@ pub fn hull_ends(points: &[Point3]) -> Option<(Point3, Point3)> {
         .min_by(|(_, a), (_, b)| dist_to_face(last_pt, a).total_cmp(&dist_to_face(last_pt, b)))
         .map(|(i, _)| i)?;
 
-    // Compute extension vectors
     let compute_extension = |pt: &Point3, face_idx: usize| -> [f64; 3] {
         let face = &faces[face_idx];
         let dist = dist_to_face(pt, face);
 
-        if dist < HULL_PLANE_EPSILON {
-            // Point is on the hull face — extend away from center
+        if dist < hull_plane_epsilon {
             [pt[0] - center[0], pt[1] - center[1], pt[2] - center[2]]
         } else {
-            // Project point onto face plane and use normal direction
             let dot = pt[0] * face.normal[0] + pt[1] * face.normal[1] + pt[2] * face.normal[2]
                 - face.offset;
             [
@@ -153,15 +149,15 @@ pub fn hull_ends(points: &[Point3]) -> Option<(Point3, Point3)> {
     let scale_last = max_radius / len_last;
 
     let point1 = [
-        first_pt[0] + EXTEND_FACTOR * scale_first * ext_first[0],
-        first_pt[1] + EXTEND_FACTOR * scale_first * ext_first[1],
-        first_pt[2] + EXTEND_FACTOR * scale_first * ext_first[2],
+        first_pt[0] + extend_factor * scale_first * ext_first[0],
+        first_pt[1] + extend_factor * scale_first * ext_first[1],
+        first_pt[2] + extend_factor * scale_first * ext_first[2],
     ];
 
     let point2 = [
-        last_pt[0] + EXTEND_FACTOR * scale_last * ext_last[0],
-        last_pt[1] + EXTEND_FACTOR * scale_last * ext_last[1],
-        last_pt[2] + EXTEND_FACTOR * scale_last * ext_last[2],
+        last_pt[0] + extend_factor * scale_last * ext_last[0],
+        last_pt[1] + extend_factor * scale_last * ext_last[1],
+        last_pt[2] + extend_factor * scale_last * ext_last[2],
     ];
 
     Some((point1, point2))
@@ -170,6 +166,7 @@ pub fn hull_ends(points: &[Point3]) -> Option<(Point3, Point3)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::KnotConfig;
 
     fn is_finite_point(p: &Point3) -> bool {
         p[0].is_finite() && p[1].is_finite() && p[2].is_finite()
@@ -177,12 +174,14 @@ mod tests {
 
     #[test]
     fn hull_ends_returns_none_for_short_chain() {
+        let cfg = KnotConfig::default();
         let points = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0]];
-        assert!(hull_ends(&points).is_none());
+        assert!(hull_ends(&points, cfg.hull_plane_epsilon, cfg.extend_factor).is_none());
     }
 
     #[test]
     fn hull_ends_returns_none_for_degenerate_geometry() {
+        let cfg = KnotConfig::default();
         let points = vec![
             [0.0, 0.0, 0.0],
             [1.0, 0.0, 0.0],
@@ -190,11 +189,12 @@ mod tests {
             [3.0, 0.0, 0.0],
             [4.0, 0.0, 0.0],
         ];
-        assert!(hull_ends(&points).is_none());
+        assert!(hull_ends(&points, cfg.hull_plane_epsilon, cfg.extend_factor).is_none());
     }
 
     #[test]
     fn hull_ends_returns_extended_endpoints_for_valid_chain() {
+        let cfg = KnotConfig::default();
         let points = vec![
             [0.0, 0.0, 0.0],
             [1.0, 0.0, 0.0],
@@ -204,7 +204,9 @@ mod tests {
             [0.0, 0.7, 0.6],
         ];
 
-        let (start_ext, end_ext) = hull_ends(&points).expect("expected non-degenerate hull");
+        let (start_ext, end_ext) =
+            hull_ends(&points, cfg.hull_plane_epsilon, cfg.extend_factor)
+                .expect("expected non-degenerate hull");
         assert!(is_finite_point(&start_ext));
         assert!(is_finite_point(&end_ext));
         assert_ne!(start_ext, points[0]);

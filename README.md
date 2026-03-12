@@ -44,6 +44,7 @@ rust_knot/
 ├── Cargo.toml
 ├── src/
 │   ├── lib.rs               # crate 入口，re-export 公开 API
+│   ├── config.rs             # KnotConfig — 统一配置结构体
 │   ├── point.rs              # Point3 = [f64; 3], EPSILON = 1e-7
 │   ├── error.rs              # KnotError 枚举 (Io, PolynomialParse, DataParse, HullFailed, NotFound, EmptyChain)
 │   ├── polynomial.rs         # Polynomial<i64> 算术 + Bareiss 行列式 (~600 行，替代 GiNaC)
@@ -69,6 +70,21 @@ rust_knot/
 
 **关键设计决策**: 不使用任何符号数学库。Alexander 矩阵的元素只有 `{0, 1, -1, t, 1-t}`，因此我们实现了轻量的 `Polynomial { coeffs: Vec<i64> }`（约 600 行），配合 Bareiss 无分数消元行列式算法，完全在 `Z[t]` 整数多项式环内完成计算。
 
+## 配置 (`KnotConfig`)
+
+所有超参数和模式标志统一管理在 `KnotConfig` 结构体中:
+
+| 字段 | 类型 | 默认值 | 含义 |
+|------|------|--------|------|
+| `is_ring` | `bool` | `false` | 开链 (`false`) 或环链 (`true`) |
+| `faster` | `bool` | `false` | 启用 KMT 简化（加速，不影响结果） |
+| `debug` | `bool` | `false` | 输出调试信息到 stderr |
+| `hull_plane_epsilon` | `f64` | `5e-3` | 凸包面判定阈值（越大容忍度越高） |
+| `extend_factor` | `f64` | `100.0` | 端点外延缩放因子（越大端点推得越远） |
+| `num_rotations` | `u32` | `4` | 环链模式旋转搜索次数（越多越精确但越慢） |
+
+`EPSILON = 1e-7`（`point.rs`）为全局几何零判定阈值，用于交叉检测和法线计算，作为底层数值常量不纳入 `KnotConfig`。
+
 ## 编译和测试
 
 ```bash
@@ -89,19 +105,33 @@ cargo build --release --example identify_knot
 ### 作为库
 
 ```rust
-use rust_knot::{AlexanderTable, get_knottype, find_knot_core, KnotOptions, KnotSizeOptions};
+use rust_knot::{AlexanderTable, KnotConfig, get_knottype, find_knot_core};
 
 // 加载 Alexander 多项式查找表
 let table = AlexanderTable::from_file("table_knot_Alexander_polynomial.txt")?;
 
+// 统一配置
+let config = KnotConfig {
+    faster: true,          // 启用 KMT 简化
+    is_ring: false,        // 开链模式
+    ..KnotConfig::default()
+};
+
 // 识别纽结类型
-let opts = KnotOptions { faster: true, debug: false };
-let knot_type = get_knottype(&points, &table, &opts)?;  // e.g. "3_1"
+let knot_type = get_knottype(&points, &table, &config)?;  // e.g. "3_1"
 
 // 定位最小纽结核心
-let size_opts = KnotSizeOptions::default();
-let core = find_knot_core(&points, &knot_type, &table, &size_opts)?;
+let core = find_knot_core(&points, &knot_type, &table, &config)?;
 println!("核心区间: [{}, {}], 大小: {}", core.left, core.right, core.size);
+
+// 自定义超参数
+let custom = KnotConfig {
+    is_ring: true,
+    extend_factor: 200.0,      // 凸包端点外延倍数
+    hull_plane_epsilon: 1e-2,   // 凸包面判定阈值
+    num_rotations: 8,           // 环链搜索旋转次数
+    ..KnotConfig::default()
+};
 ```
 
 ### CLI 工具
@@ -110,13 +140,16 @@ println!("核心区间: [{}, {}], 大小: {}", core.left, core.right, core.size)
 # 基本用法: 自动识别纽结类型并定位核心
 ./target/release/examples/identify_knot table_knot_Alexander_polynomial.txt input.xyz
 
-# 指定目标纽结类型
-./target/release/examples/identify_knot table_knot_Alexander_polynomial.txt input.xyz 3_1
+# 环链模式
+./target/release/examples/identify_knot table_knot_Alexander_polynomial.txt input.xyz --ring
+
+# 指定目标纽结类型 + 调试输出
+./target/release/examples/identify_knot table_knot_Alexander_polynomial.txt input.xyz 3_1 --debug
 ```
 
 输出示例:
 ```
-Loaded Alexander table (106 entries) in 1.2ms
+Loaded Alexander table (424 entries) in 1.2ms
 Read 200 points in 0.3ms
 Knot type: 3_1 (computed in 5.4ms)
 Knot core: [45, 162], size = 118 (found in 82.3ms)
@@ -138,7 +171,7 @@ Knot core: [45, 162], size = 118 (found in 82.3ms)
 
 - **无 GiNaC 依赖**: 整数多项式 + Bareiss 行列式完全替代符号计算库
 - **线程安全**: 所有核心函数为纯函数，无全局状态，可直接用 `rayon` 并行
-- **强类型错误处理**: `KnotError` 枚举覆盖所有错误路径，无 `panic` 无静默失败
+- **强类型错误处理**: `KnotError` 枚举覆盖所有错误路径；公开 API 不会因合法输入 panic（`polynomial.rs` 中的 `assert` 为 Bareiss 算法内部不变量断言）
 - **2530 行 Rust** 替代 ~4300 行 C++（含第三方 quickhull.h）
 
 ## 测试覆盖
@@ -157,7 +190,7 @@ Knot core: [45, 162], size = 118 (found in 82.3ms)
 
 ## 多项式查找表
 
-程序需要 `table_knot_Alexander_polynomial.txt` 文件（位于上级目录），包含 50+ 种纽结的 Alexander 多项式。格式:
+程序需要 `table_knot_Alexander_polynomial.txt` 文件（251 种纽结，含 unknot 到 10 交叉数）。项目中的副本位于 `test_manual/` 或上级目录。格式:
 
 ```
 1                               1
