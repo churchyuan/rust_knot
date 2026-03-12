@@ -9,13 +9,13 @@ use rust_knot::knottype::get_knottype;
 fn load_table() -> AlexanderTable {
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/test_manual/table_knot_Alexander_polynomial.txt"
+        "/tests/fixtures/table_knot_Alexander_polynomial.txt"
     );
     AlexanderTable::from_file(path).expect("failed to load table")
 }
 
-fn load_xyz(path: &str) -> Vec<rust_knot::Point3> {
-    let full = format!("{}/{}", env!("CARGO_MANIFEST_DIR"), path);
+fn load_xyz(name: &str) -> Vec<rust_knot::Point3> {
+    let full = format!("{}/tests/fixtures/{}", env!("CARGO_MANIFEST_DIR"), name);
     let file = std::fs::File::open(&full).unwrap_or_else(|e| panic!("failed to open {full}: {e}"));
     let mut reader = BufReader::new(file);
     read_data_xyz(&mut reader).expect("failed to parse XYZ")
@@ -26,7 +26,7 @@ fn load_xyz(path: &str) -> Vec<rust_knot::Point3> {
 #[test]
 fn test_trefoil_ring_identification() {
     let table = load_table();
-    let points = load_xyz("test_manual/L300_knot3_1_ring.xyz");
+    let points = load_xyz("L300_knot3_1_ring.xyz");
 
     let config = KnotConfig {
         is_ring: true,
@@ -41,7 +41,7 @@ fn test_trefoil_ring_identification() {
 #[test]
 fn test_trefoil_ring_core_found() {
     let table = load_table();
-    let points = load_xyz("test_manual/L300_knot3_1_ring.xyz");
+    let points = load_xyz("L300_knot3_1_ring.xyz");
 
     let config = KnotConfig {
         is_ring: true,
@@ -63,7 +63,7 @@ fn test_trefoil_ring_core_found() {
 #[test]
 fn test_figure_eight_open_identification() {
     let table = load_table();
-    let points = load_xyz("test_manual/L400_knot4_1_open.xyz");
+    let points = load_xyz("L400_knot4_1_open.xyz");
 
     let config = KnotConfig {
         is_ring: false,
@@ -78,7 +78,7 @@ fn test_figure_eight_open_identification() {
 #[test]
 fn test_figure_eight_open_core_found() {
     let table = load_table();
-    let points = load_xyz("test_manual/L400_knot4_1_open.xyz");
+    let points = load_xyz("L400_knot4_1_open.xyz");
 
     let config = KnotConfig {
         is_ring: false,
