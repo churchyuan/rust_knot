@@ -11,14 +11,14 @@ use rust_knot::config::KnotConfig;
 
 fn print_usage(prog: &str) {
     eprintln!(
-        "Usage: {prog} <xyz_file> [--table <path>] [target_type] [--ring] [--fast] [--debug] [--output <path>] [--batch <size>] [--threads <n>]"
+        "Usage: {prog} <xyz_file> [--table <path>] [target_type] [--ring] [--no-fast] [--debug] [--output <path>] [--batch <size>] [--threads <n>]"
     );
     eprintln!();
     eprintln!("  xyz_file:        path to XYZ coordinate file (single or multi-frame)");
     eprintln!("  --table <path>:  Alexander polynomial table (default: built-in ≤9 crossings)");
     eprintln!("  target_type:     (optional) knot type to search for core, e.g. '3_1'");
     eprintln!("  --ring:          treat chain as a closed ring");
-    eprintln!("  --fast:          enable KMT simplification");
+    eprintln!("  --no-fast:       disable KMT simplification (enabled by default)");
     eprintln!("  --debug:         enable debug output");
     eprintln!("  --output <path>: write knot_index log (default: knot_index.txt)");
     eprintln!("  --batch <size>:  frames per batch (default: 64)");
@@ -55,7 +55,7 @@ fn run_cli(args: &[String], prog: &str) {
     while i < args.len() {
         match args[i].as_str() {
             "--ring" => config.is_ring = true,
-            "--fast" => config.faster = true,
+            "--no-fast" => config.faster = false,
             "--debug" => config.debug = true,
             "--table" => {
                 i += 1;
@@ -81,7 +81,7 @@ fn run_cli(args: &[String], prog: &str) {
                     std::process::exit(1);
                 }));
             }
-            s if !s.starts_with("--") => target_type = Some(s.to_string()),
+            s if !s.starts_with('-') => target_type = Some(s.to_string()),
             other => eprintln!("warning: unknown flag '{other}'"),
         }
         i += 1;
@@ -99,6 +99,11 @@ fn run_cli(args: &[String], prog: &str) {
                 eprintln!("error: failed to configure rayon thread pool: {e}");
                 std::process::exit(1);
             });
+    }
+
+    if batch_size == Some(0) {
+        eprintln!("error: --batch must be at least 1");
+        std::process::exit(1);
     }
 
     let t0 = Instant::now();
@@ -141,6 +146,7 @@ fn run_cli(args: &[String], prog: &str) {
     let t0 = Instant::now();
     let n_knotted = AtomicUsize::new(0);
     let n_errors = AtomicUsize::new(0);
+    let mut first_frame = None;
 
     let total_frames = process_frames_streaming(
         reader,
@@ -174,23 +180,29 @@ fn run_cli(args: &[String], prog: &str) {
                 .expect("write failed");
             }
 
-            if batch_results.len() == 1 && batch_results[0].frame == 0 {
-                let r = &batch_results[0];
-                if let Some(ref err) = r.error {
-                    println!("Error: {err}");
-                } else {
-                    println!("Knot type: {}", r.knot_type);
-                    if r.knot_start >= 0 {
-                        println!(
-                            "Knot core: [{}, {}], size = {}",
-                            r.knot_start, r.knot_end, r.knot_size
-                        );
-                    }
-                }
+            if first_frame.is_none() && !batch_results.is_empty() && batch_results[0].frame == 0 {
+                first_frame = Some(batch_results[0].clone());
             }
         },
     )
     .expect("processing failed");
+
+    // Single-frame: print human-readable summary to stdout
+    if total_frames == 1 {
+        if let Some(ref r) = first_frame {
+            if let Some(ref err) = r.error {
+                eprintln!("Error: {err}");
+            } else {
+                println!("Knot type: {}", r.knot_type);
+                if r.knot_start >= 0 {
+                    println!(
+                        "Knot core: [{}, {}], size = {}",
+                        r.knot_start, r.knot_end, r.knot_size
+                    );
+                }
+            }
+        }
+    }
 
     writer.flush().expect("flush failed");
     let compute_time = t0.elapsed();

@@ -128,7 +128,7 @@ cargo run -- input.xyz
 ./target/release/rust_knot trajectory.xyz --ring --batch 128 --threads 8 --output result.txt
 
 # 全部参数
-./target/release/rust_knot <xyz_file> [target_type] [--table <path>] [--ring] [--fast] [--debug] [--output <path>] [--batch <size>] [--threads <n>]
+./target/release/rust_knot <xyz_file> [target_type] [--table <path>] [--ring] [--no-fast] [--debug] [--output <path>] [--batch <size>] [--threads <n>]
 ```
 
 输出文件 `knot_index.txt`:
