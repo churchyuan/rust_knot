@@ -81,7 +81,10 @@ fn run_cli(args: &[String], prog: &str) {
                 }));
             }
             s if !s.starts_with('-') => target_type = Some(s.to_string()),
-            other => eprintln!("warning: unknown flag '{other}'"),
+            other => {
+                eprintln!("error: unknown flag '{other}'");
+                std::process::exit(1);
+            }
         }
         i += 1;
     }
@@ -103,11 +106,6 @@ fn run_cli(args: &[String], prog: &str) {
                 eprintln!("error: failed to configure rayon thread pool: {e}");
                 std::process::exit(1);
             });
-    }
-
-    if batch_size == Some(0) {
-        eprintln!("error: --batch must be at least 1");
-        std::process::exit(1);
     }
 
     let t0 = Instant::now();
@@ -148,8 +146,8 @@ fn run_cli(args: &[String], prog: &str) {
         .expect("write header failed");
 
     let t0 = Instant::now();
-    let n_knotted = AtomicUsize::new(0);
-    let n_errors = AtomicUsize::new(0);
+    let mut n_knotted = 0usize;
+    let mut n_errors = 0usize;
     let mut first_frame = None;
 
     let total_frames = process_frames_streaming(
