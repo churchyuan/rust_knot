@@ -186,7 +186,7 @@ fn classify_frames(
 ) -> PyResult<Vec<String>> {
     let results: Vec<Result<String, String>> = if let Some(threads) = num_threads {
         if threads == 0 {
-            return Err(PyValueError::new_err("num_threads must be >= 1"));
+            return Err(PyValueError::new_err("threads must be >= 1"));
         }
         let pool = ThreadPoolBuilder::new()
             .num_threads(threads)
