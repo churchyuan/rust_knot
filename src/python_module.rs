@@ -1,6 +1,6 @@
 use std::env;
 use std::fs::{File, OpenOptions};
-use std::io::{BufReader, BufWriter};
+use std::io::{BufRead, BufReader, BufWriter};
 use std::path::{Path, PathBuf};
 
 use ndarray::{Array2, Array3};
@@ -20,8 +20,7 @@ use crate::knotsize::find_knot_core;
 use crate::knottype::get_knottype;
 use crate::point::Point3;
 
-const DEFAULT_TABLE_PATH: &str =
-    "/home/yongjian/.local/share/rust_knot/table_knot_Alexander_polynomial.txt";
+const DEFAULT_TABLE_FILENAME: &str = "table_knot_Alexander_polynomial.txt";
 
 fn to_py_runtime_error(message: impl Into<String>) -> PyErr {
     PyRuntimeError::new_err(message.into())
@@ -32,9 +31,15 @@ fn resolve_table_path() -> Option<PathBuf> {
         return Some(PathBuf::from(path));
     }
 
-    let default_path = PathBuf::from(DEFAULT_TABLE_PATH);
-    if default_path.exists() {
-        return Some(default_path);
+    if let Ok(home) = env::var("HOME") {
+        let default_path = PathBuf::from(home)
+            .join(".local")
+            .join("share")
+            .join("rust_knot")
+            .join(DEFAULT_TABLE_FILENAME);
+        if default_path.exists() {
+            return Some(default_path);
+        }
     }
 
     None
@@ -122,6 +127,111 @@ fn frames_from_path(path: &Path) -> PyResult<Vec<Vec<Point3>>> {
     read_data_xyz_frames(&mut reader).map_err(|e| to_py_runtime_error(e.to_string()))
 }
 
+fn parse_pdb_model_index(line: &str, fallback: usize) -> usize {
+    line.get(5..)
+        .unwrap_or("")
+        .trim()
+        .split_whitespace()
+        .next()
+        .and_then(|s| s.parse::<usize>().ok())
+        .map(|n| n.saturating_sub(1))
+        .unwrap_or(fallback)
+}
+
+fn parse_pdb_coord(
+    line: &str,
+    start: usize,
+    end: usize,
+    field: &str,
+    line_no: usize,
+) -> Result<f64, String> {
+    line.get(start..end)
+        .unwrap_or("")
+        .trim()
+        .parse::<f64>()
+        .map_err(|e| format!("Invalid {field} at PDB line {line_no}: {e}"))
+}
+
+fn frames_from_pdb_path(path: &Path, atom_filter: &str) -> PyResult<Vec<Vec<Point3>>> {
+    if !path.exists() {
+        return Err(PyFileNotFoundError::new_err(format!(
+            "Cannot open file: {}",
+            path.display()
+        )));
+    }
+
+    let atom_filter = match atom_filter.to_ascii_lowercase().as_str() {
+        "all" => "all",
+        "ca" => "ca",
+        _ => {
+            return Err(PyValueError::new_err(
+                "Invalid atom_filter. Expected 'all' or 'ca'.",
+            ))
+        }
+    };
+
+    let file = File::open(path).map_err(|e| to_py_runtime_error(e.to_string()))?;
+    let mut reader = BufReader::new(file);
+    let mut frames: Vec<Vec<Point3>> = Vec::new();
+    let mut current_frame = 0usize;
+    let mut line = String::new();
+    let mut line_no = 0usize;
+    let mut saw_atom = false;
+
+    loop {
+        line.clear();
+        let n = reader
+            .read_line(&mut line)
+            .map_err(|e| to_py_runtime_error(e.to_string()))?;
+        if n == 0 {
+            break;
+        }
+        line_no += 1;
+
+        if line.starts_with("MODEL") {
+            current_frame = parse_pdb_model_index(&line, frames.len());
+            if current_frame >= frames.len() {
+                frames.resize_with(current_frame + 1, Vec::new);
+            }
+            continue;
+        }
+        if line.starts_with("ENDMDL") {
+            continue;
+        }
+        if !(line.starts_with("ATOM") || line.starts_with("HETATM")) {
+            continue;
+        }
+
+        if frames.is_empty() {
+            frames.push(Vec::new());
+            current_frame = 0;
+        }
+        if current_frame >= frames.len() {
+            frames.resize_with(current_frame + 1, Vec::new);
+        }
+
+        if atom_filter == "ca" {
+            let atom_name = line.get(12..16).unwrap_or("").trim();
+            if atom_name != "CA" {
+                continue;
+            }
+        }
+
+        let x = parse_pdb_coord(&line, 30, 38, "x", line_no).map_err(to_py_runtime_error)?;
+        let y = parse_pdb_coord(&line, 38, 46, "y", line_no).map_err(to_py_runtime_error)?;
+        let z = parse_pdb_coord(&line, 46, 54, "z", line_no).map_err(to_py_runtime_error)?;
+        frames[current_frame].push([x, y, z]);
+        saw_atom = true;
+    }
+
+    if !saw_atom {
+        return Err(PyRuntimeError::new_err(
+            "No ATOM/HETATM records found in PDB file.",
+        ));
+    }
+    Ok(frames)
+}
+
 fn frames_from_input(input_data: &PyAny) -> PyResult<Vec<Vec<Point3>>> {
     if let Ok(path) = input_data.extract::<String>() {
         return frames_from_path(Path::new(&path));
@@ -183,15 +293,15 @@ fn classify_frames(
     table: &AlexanderTable,
     config: &KnotConfig,
     num_threads: Option<usize>,
-) -> PyResult<Vec<String>> {
+) -> Result<Vec<String>, String> {
     let results: Vec<Result<String, String>> = if let Some(threads) = num_threads {
         if threads == 0 {
-            return Err(PyValueError::new_err("threads must be >= 1"));
+            return Err("threads must be >= 1".to_string());
         }
         let pool = ThreadPoolBuilder::new()
             .num_threads(threads)
             .build()
-            .map_err(|e| to_py_runtime_error(e.to_string()))?;
+            .map_err(|e| e.to_string())?;
         pool.install(|| {
             frames
                 .par_iter()
@@ -209,7 +319,7 @@ fn classify_frames(
     for result in results {
         match result {
             Ok(value) => out.push(value),
-            Err(message) => return Err(to_py_runtime_error(message)),
+            Err(message) => return Err(message),
         }
     }
     Ok(out)
@@ -220,7 +330,7 @@ fn compute_knot_size(
     table: &AlexanderTable,
     config: &KnotConfig,
     num_threads: Option<usize>,
-) -> PyResult<(Vec<String>, Vec<Vec<i32>>)> {
+) -> Result<(Vec<String>, Vec<Vec<i32>>), String> {
     let compute_one = |points: &Vec<Point3>| -> Result<(String, Vec<i32>), String> {
         let knot_type = classify_frame(points, table, config)?;
         let size = if knot_type == "1" || !knot_type.contains('_') {
@@ -239,12 +349,12 @@ fn compute_knot_size(
 
     let results: Vec<Result<(String, Vec<i32>), String>> = if let Some(threads) = num_threads {
         if threads == 0 {
-            return Err(PyValueError::new_err("threads must be >= 1"));
+            return Err("threads must be >= 1".to_string());
         }
         let pool = ThreadPoolBuilder::new()
             .num_threads(threads)
             .build()
-            .map_err(|e| to_py_runtime_error(e.to_string()))?;
+            .map_err(|e| e.to_string())?;
         pool.install(|| frames.par_iter().map(compute_one).collect())
     } else {
         frames.iter().map(compute_one).collect()
@@ -258,7 +368,7 @@ fn compute_knot_size(
                 knot_types.push(knot_type);
                 knot_sizes.push(knot_size);
             }
-            Err(message) => return Err(to_py_runtime_error(message)),
+            Err(message) => return Err(message),
         }
     }
 
@@ -271,12 +381,23 @@ fn read_xyz(py: Python<'_>, filename: &str) -> PyResult<Py<PyArray3<f64>>> {
     Ok(frames_to_pyarray(py, &frames)?.to_owned())
 }
 
-#[pyfunction]
-fn write_xyz(filename: &str, input_data: &PyAny) -> PyResult<()> {
+#[pyfunction(signature = (filename, atom_filter = "all"))]
+fn read_pdb(py: Python<'_>, filename: &str, atom_filter: &str) -> PyResult<Py<PyArray3<f64>>> {
+    let frames = frames_from_pdb_path(Path::new(filename), atom_filter)?;
+    Ok(frames_to_pyarray(py, &frames)?.to_owned())
+}
+
+#[pyfunction(signature = (filename, input_data, append = false))]
+fn write_xyz(filename: &str, input_data: &PyAny, append: bool) -> PyResult<()> {
     let frames = frames_from_input(input_data)?;
-    let file = OpenOptions::new()
-        .create(true)
-        .append(true)
+    let mut options = OpenOptions::new();
+    options.create(true).write(true);
+    if append {
+        options.append(true);
+    } else {
+        options.truncate(true);
+    }
+    let file = options
         .open(filename)
         .map_err(|e| to_py_runtime_error(e.to_string()))?;
     let mut writer = BufWriter::new(file);
@@ -290,26 +411,36 @@ fn write_xyz(filename: &str, input_data: &PyAny) -> PyResult<()> {
 
 #[pyfunction(signature = (input_data, chain_type = "ring", threads = None))]
 fn knot_type(
+    py: Python<'_>,
     input_data: &PyAny,
     chain_type: &str,
     threads: Option<usize>,
 ) -> PyResult<Vec<String>> {
+    if matches!(threads, Some(0)) {
+        return Err(PyValueError::new_err("threads must be >= 1"));
+    }
     let frames = frames_from_input(input_data)?;
     let table = load_table()?;
     let config = config_from_chain_type(chain_type)?;
-    classify_frames(&frames, &table, &config, threads)
+    py.allow_threads(|| classify_frames(&frames, &table, &config, threads))
+        .map_err(to_py_runtime_error)
 }
 
 #[pyfunction(signature = (input_data, chain_type = "ring", threads = None))]
 fn knot_size(
+    py: Python<'_>,
     input_data: &PyAny,
     chain_type: &str,
     threads: Option<usize>,
 ) -> PyResult<(Vec<String>, Vec<Vec<i32>>)> {
+    if matches!(threads, Some(0)) {
+        return Err(PyValueError::new_err("threads must be >= 1"));
+    }
     let frames = frames_from_input(input_data)?;
     let table = load_table()?;
     let config = config_from_chain_type(chain_type)?;
-    compute_knot_size(&frames, &table, &config, threads)
+    py.allow_threads(|| compute_knot_size(&frames, &table, &config, threads))
+        .map_err(to_py_runtime_error)
 }
 
 #[pyfunction(signature = (input_data, chain_type = "ring"))]
@@ -338,6 +469,7 @@ fn kmt(py: Python<'_>, input_data: &PyAny, chain_type: &str) -> PyResult<Py<PyAr
 #[pymodule]
 fn alexander_poly(py: Python<'_>, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(read_xyz, m)?)?;
+    m.add_function(wrap_pyfunction!(read_pdb, m)?)?;
     m.add_function(wrap_pyfunction!(write_xyz, m)?)?;
     m.add_function(wrap_pyfunction!(knot_type, m)?)?;
     m.add_function(wrap_pyfunction!(knot_size, m)?)?;
