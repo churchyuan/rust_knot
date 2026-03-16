@@ -219,25 +219,47 @@ fn compute_knot_size(
     frames: &[Vec<Point3>],
     table: &AlexanderTable,
     config: &KnotConfig,
+    num_threads: Option<usize>,
 ) -> PyResult<(Vec<String>, Vec<Vec<i32>>)> {
-    let mut knot_types = Vec::with_capacity(frames.len());
-    let mut knot_sizes = Vec::with_capacity(frames.len());
-
-    for points in frames {
-        let knot_type = classify_frame(points, table, config).map_err(to_py_runtime_error)?;
+    let compute_one = |points: &Vec<Point3>| -> Result<(String, Vec<i32>), String> {
+        let knot_type = classify_frame(points, table, config)?;
         let size = if knot_type == "1" || !knot_type.contains('_') {
             vec![-1, -1, 0]
         } else {
-            let core = find_knot_core(points, &knot_type, table, config)
-                .map_err(|e| to_py_runtime_error(e.to_string()))?;
+            let core =
+                find_knot_core(points, &knot_type, table, config).map_err(|e| e.to_string())?;
             if core.matched {
                 vec![core.left, core.right, core.size]
             } else {
                 vec![-1, -1, 0]
             }
         };
-        knot_types.push(knot_type);
-        knot_sizes.push(size);
+        Ok((knot_type, size))
+    };
+
+    let results: Vec<Result<(String, Vec<i32>), String>> = if let Some(threads) = num_threads {
+        if threads == 0 {
+            return Err(PyValueError::new_err("threads must be >= 1"));
+        }
+        let pool = ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .map_err(|e| to_py_runtime_error(e.to_string()))?;
+        pool.install(|| frames.par_iter().map(compute_one).collect())
+    } else {
+        frames.iter().map(compute_one).collect()
+    };
+
+    let mut knot_types = Vec::with_capacity(results.len());
+    let mut knot_sizes = Vec::with_capacity(results.len());
+    for result in results {
+        match result {
+            Ok((knot_type, knot_size)) => {
+                knot_types.push(knot_type);
+                knot_sizes.push(knot_size);
+            }
+            Err(message) => return Err(to_py_runtime_error(message)),
+        }
     }
 
     Ok((knot_types, knot_sizes))
@@ -266,24 +288,28 @@ fn write_xyz(filename: &str, input_data: &PyAny) -> PyResult<()> {
     Ok(())
 }
 
-#[pyfunction(signature = (input_data, chain_type = "ring", num_threads = None))]
+#[pyfunction(signature = (input_data, chain_type = "ring", threads = None))]
 fn knot_type(
     input_data: &PyAny,
     chain_type: &str,
-    num_threads: Option<usize>,
+    threads: Option<usize>,
 ) -> PyResult<Vec<String>> {
     let frames = frames_from_input(input_data)?;
     let table = load_table()?;
     let config = config_from_chain_type(chain_type)?;
-    classify_frames(&frames, &table, &config, num_threads)
+    classify_frames(&frames, &table, &config, threads)
 }
 
-#[pyfunction(signature = (input_data, chain_type = "ring"))]
-fn knot_size(input_data: &PyAny, chain_type: &str) -> PyResult<(Vec<String>, Vec<Vec<i32>>)> {
+#[pyfunction(signature = (input_data, chain_type = "ring", threads = None))]
+fn knot_size(
+    input_data: &PyAny,
+    chain_type: &str,
+    threads: Option<usize>,
+) -> PyResult<(Vec<String>, Vec<Vec<i32>>)> {
     let frames = frames_from_input(input_data)?;
     let table = load_table()?;
     let config = config_from_chain_type(chain_type)?;
-    compute_knot_size(&frames, &table, &config)
+    compute_knot_size(&frames, &table, &config, threads)
 }
 
 #[pyfunction(signature = (input_data, chain_type = "ring"))]
