@@ -272,7 +272,7 @@ fn frames_to_pyarray<'py>(
 
     let array = Array3::from_shape_vec((n_frames, max_atoms, 3), data)
         .map_err(|e| to_py_runtime_error(e.to_string()))?;
-    Ok(array.into_pyarray_bound(py))
+    Ok(array.into_pyarray(py))
 }
 
 fn points_to_pyarray<'py>(
@@ -285,7 +285,7 @@ fn points_to_pyarray<'py>(
     }
     let array = Array2::from_shape_vec((points.len(), 3), data)
         .map_err(|e| to_py_runtime_error(e.to_string()))?;
-    Ok(array.into_pyarray_bound(py))
+    Ok(array.into_pyarray(py))
 }
 
 fn classify_frame(
@@ -448,7 +448,7 @@ fn knot_type(
     let frames = frames_from_input(input_data)?;
     let table = load_table()?;
     let config = config_from_chain_type(chain_type)?;
-    py.allow_threads(|| classify_frames(&frames, &table, &config, threads))
+    py.detach(|| classify_frames(&frames, &table, &config, threads))
         .map_err(to_py_runtime_error)
 }
 
@@ -465,7 +465,7 @@ fn knot_size(
     let frames = frames_from_input(input_data)?;
     let table = load_table()?;
     let config = config_from_chain_type(chain_type)?;
-    py.allow_threads(|| compute_knot_size(&frames, &table, &config, threads))
+    py.detach(|| compute_knot_size(&frames, &table, &config, threads))
         .map_err(to_py_runtime_error)
 }
 
@@ -517,7 +517,7 @@ mod tests {
 
     fn init_python() {
         static INIT: Once = Once::new();
-        INIT.call_once(pyo3::prepare_freethreaded_python);
+        INIT.call_once(Python::initialize);
     }
 
     fn straight_line(n: usize) -> Vec<Point3> {
@@ -527,13 +527,13 @@ mod tests {
     #[test]
     fn frames_from_array3_parses_expected_points() {
         init_python();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let data = vec![
                 0.0, 1.0, 2.0, 3.0, 4.0, 5.0, // frame 0
                 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, // frame 1
             ];
             let array = Array3::from_shape_vec((2, 2, 3), data).unwrap();
-            let py_array = array.into_pyarray_bound(py);
+            let py_array = array.into_pyarray(py);
             let frames = frames_from_array3(py_array.readonly()).unwrap();
             assert_eq!(frames.len(), 2);
             assert_eq!(frames[0], vec![[0.0, 1.0, 2.0], [3.0, 4.0, 5.0]]);
@@ -544,9 +544,9 @@ mod tests {
     #[test]
     fn frames_from_array3_rejects_invalid_shape() {
         init_python();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let array = Array3::from_shape_vec((1, 2, 2), vec![1.0, 2.0, 3.0, 4.0]).unwrap();
-            let py_array = array.into_pyarray_bound(py);
+            let py_array = array.into_pyarray(py);
             let err = frames_from_array3(py_array.readonly()).unwrap_err();
             assert!(err.to_string().contains("Expected array with shape"));
         });

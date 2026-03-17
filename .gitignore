@@ -2,6 +2,9 @@ test_manual/
 
 target
 REVIEW*.md
+review*.md
+pyknotid
+tools/
 CHANGELOG.md
 review*.md
 TODO.md
