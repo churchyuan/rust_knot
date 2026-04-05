@@ -55,6 +55,56 @@ pub fn kmt_open_chain(points: &mut Vec<Point3>) {
     }
 }
 
+/// KMT simplification for open chains that retains the original indices.
+/// Used for precise topological distance calculations along the original chain.
+pub fn kmt_open_chain_with_indices(points: &mut Vec<(Point3, usize)>) {
+    loop {
+        let initial_count = points.len();
+
+        let mut i = 1;
+        while i < points.len().saturating_sub(1) {
+            let plane = cal_normals(&points[i - 1].0, &points[i].0, &points[i + 1].0);
+
+            match plane {
+                None => {
+                    // Collinear points — safe to remove
+                    points.remove(i);
+                    continue; // don't increment i
+                }
+                Some(plane) => {
+                    // Check if removing this point would change topology
+                    let mut intersects = false;
+                    for j in 0..points.len().saturating_sub(1) {
+                        if j == i - 1 || j == i {
+                            continue;
+                        }
+                        if judge_triangle(
+                            &points[i - 1].0,
+                            &points[i].0,
+                            &points[i + 1].0,
+                            &plane,
+                            &points[j].0,
+                            &points[j + 1].0,
+                        ) {
+                            intersects = true;
+                            break;
+                        }
+                    }
+                    if !intersects {
+                        points.remove(i);
+                        continue;
+                    }
+                }
+            }
+            i += 1;
+        }
+
+        if points.len() == initial_count {
+            break;
+        }
+    }
+}
+
 /// KMT simplification for ring (closed) chains.
 /// Same logic as open chain but with modular indexing.
 ///

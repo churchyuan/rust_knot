@@ -1,6 +1,7 @@
 use std::io::BufReader;
 
 use rust_knot::alexander_table::AlexanderTable;
+use rust_knot::arm_type::get_31knot_arm_type;
 use rust_knot::batch::process_frame;
 use rust_knot::config::KnotConfig;
 use rust_knot::io::read_data_xyz;
@@ -126,6 +127,45 @@ fn test_ambiguous_lookup_returns_simplest() {
     assert!(all.len() >= 2, "expected at least 2 candidates");
     assert_eq!(all[0], "8_3");
 }
+
+#[test]
+fn test_31knot_arm_type() {
+    let table = load_table();
+    let points = load_xyz("L300_knot3_1_ring.xyz");
+
+    let config = KnotConfig {
+        is_ring: true,
+        faster: true,
+        ..KnotConfig::default()
+    };
+
+    let core = find_knot_core(&points, "3_1", &table, &config).expect("core search failed");
+    assert!(core.matched);
+
+    let mut core_points = Vec::new();
+    let n = points.len() as i32;
+    let mut curr = core.left;
+    loop {
+        core_points.push(points[curr as usize]);
+        if curr == core.right {
+            break;
+        }
+        curr = (curr + 1) % n;
+    }
+
+    // Evaluate arm type as an open chain (the core itself is open)
+    let open_config = KnotConfig {
+        is_ring: false,
+        faster: true,
+        ..config
+    };
+
+    let arm_type = get_31knot_arm_type(&core_points, &table, &open_config).expect("arm type calculation failed");
+    
+    assert!(arm_type == "two-arm" || arm_type == "three-arm");
+}
+
+
 
 #[test]
 fn test_notfound_uses_polynomial_as_knot_type() {
