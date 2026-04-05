@@ -3,6 +3,7 @@ use std::io::BufRead;
 use rayon::prelude::*;
 
 use crate::alexander_table::AlexanderTable;
+use crate::arm_type::get_31knot_arm_type;
 use crate::config::KnotConfig;
 use crate::error::KnotError;
 use crate::io::XyzFrameIter;
@@ -18,6 +19,7 @@ pub struct FrameResult {
     pub knot_start: i32,
     pub knot_end: i32,
     pub knot_size: i32,
+    pub arm_type: Option<String>,
     pub error: Option<String>,
     /// Non-fatal warnings (e.g. knot core search failed but type was identified).
     pub warnings: Vec<String>,
@@ -33,6 +35,7 @@ pub fn process_frame(
     table: &AlexanderTable,
     config: &KnotConfig,
     target_type: Option<&str>,
+    check_arm_type: bool,
 ) -> FrameResult {
     let mut warnings = Vec::new();
     let (knot_type, unknown_poly) = match get_knottype(points, table, config) {
@@ -48,6 +51,7 @@ pub fn process_frame(
                 knot_start: -1,
                 knot_end: -1,
                 knot_size: 0,
+                arm_type: None,
                 error: Some(e.to_string()),
                 warnings: Vec::new(),
             };
@@ -68,9 +72,35 @@ pub fn process_frame(
         Some(target_type.unwrap_or(&knot_type))
     };
 
+    let mut arm_type = None;
+
     let (start, end, size) = if let Some(search) = search_target {
         match find_knot_core(points, search, table, config) {
-            Ok(core) if core.matched => (core.left, core.right, core.size),
+            Ok(core) if core.matched => {
+                if check_arm_type && search == "3_1" {
+                    let mut core_points = Vec::new();
+                    let n = points.len() as i32;
+                    let mut curr = core.left;
+                    loop {
+                        core_points.push(points[curr as usize]);
+                        if curr == core.right {
+                            break;
+                        }
+                        curr = (curr + 1) % n;
+                    }
+
+                    let open_config = KnotConfig {
+                        is_ring: false,
+                        ..config.clone()
+                    };
+
+                    match get_31knot_arm_type(&core_points, table, &open_config) {
+                        Ok(arm) => arm_type = Some(arm),
+                        Err(e) => warnings.push(format!("arm type calculation failed: {e}")),
+                    }
+                }
+                (core.left, core.right, core.size)
+            }
             Ok(_) => {
                 warnings.push(format!("knot core not found for type '{search}'"));
                 (-1, -1, 0)
@@ -90,6 +120,7 @@ pub fn process_frame(
         knot_start: start,
         knot_end: end,
         knot_size: size,
+        arm_type,
         error: None,
         warnings,
     }
@@ -101,11 +132,12 @@ pub fn process_frames_parallel(
     table: &AlexanderTable,
     config: &KnotConfig,
     target_type: Option<&str>,
+    check_arm_type: bool,
 ) -> Vec<FrameResult> {
     frames
         .par_iter()
         .enumerate()
-        .map(|(i, points)| process_frame(i, points, table, config, target_type))
+        .map(|(i, points)| process_frame(i, points, table, config, target_type, check_arm_type))
         .collect()
 }
 
@@ -122,6 +154,7 @@ pub fn process_frames_streaming<R, F>(
     table: &AlexanderTable,
     config: &KnotConfig,
     target_type: Option<&str>,
+    check_arm_type: bool,
     batch_size: Option<usize>,
     mut on_batch: F,
 ) -> crate::error::Result<usize>
@@ -139,7 +172,7 @@ where
         batch.push(points);
 
         if batch.len() >= batch_size {
-            let results = process_batch(&batch, frame_offset, table, config, target_type);
+            let results = process_batch(&batch, frame_offset, table, config, target_type, check_arm_type);
             on_batch(&results);
             frame_offset += batch.len();
             batch.clear();
@@ -148,7 +181,7 @@ where
 
     // Process remaining frames
     if !batch.is_empty() {
-        let results = process_batch(&batch, frame_offset, table, config, target_type);
+        let results = process_batch(&batch, frame_offset, table, config, target_type, check_arm_type);
         on_batch(&results);
         frame_offset += batch.len();
     }
@@ -162,11 +195,12 @@ fn process_batch(
     table: &AlexanderTable,
     config: &KnotConfig,
     target_type: Option<&str>,
+    check_arm_type: bool,
 ) -> Vec<FrameResult> {
     batch
         .par_iter()
         .enumerate()
-        .map(|(i, points)| process_frame(offset + i, points, table, config, target_type))
+        .map(|(i, points)| process_frame(offset + i, points, table, config, target_type, check_arm_type))
         .collect()
 }
 
@@ -185,7 +219,7 @@ mod tests {
         let table = AlexanderTable::from_reader(std::io::Cursor::new(table_data)).unwrap();
         let config = KnotConfig::default();
         let pts = straight_line(50);
-        let result = process_frame(0, &pts, &table, &config, None);
+        let result = process_frame(0, &pts, &table, &config, None, false);
         assert_eq!(result.knot_type, "1");
         assert_eq!(result.knot_start, -1);
         assert!(result.error.is_none());
@@ -197,7 +231,7 @@ mod tests {
         let table = AlexanderTable::from_reader(std::io::Cursor::new(table_data)).unwrap();
         let config = KnotConfig::default();
         let frames: Vec<Vec<Point3>> = (0..5).map(|_| straight_line(50)).collect();
-        let results = process_frames_parallel(&frames, &table, &config, None);
+        let results = process_frames_parallel(&frames, &table, &config, None, false);
         assert_eq!(results.len(), 5);
         for (i, r) in results.iter().enumerate() {
             assert_eq!(r.frame, i);

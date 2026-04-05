@@ -179,7 +179,7 @@ fn test_notfound_uses_polynomial_as_knot_type() {
         ..KnotConfig::default()
     };
 
-    let result = process_frame(0, &points, &table, &config, None);
+    let result = process_frame(0, &points, &table, &config, None, false);
     assert!(
         result.error.is_none(),
         "notfound should not be treated as fatal error"
