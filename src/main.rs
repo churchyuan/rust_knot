@@ -10,7 +10,7 @@ use rust_knot::config::KnotConfig;
 
 fn print_usage(prog: &str) {
     eprintln!(
-        "Usage: {prog} <xyz_file> [--table <path>] [target_type] [--ring] [--no-fast] [--debug] [--output <path>] [--batch <size>] [--threads <n>]"
+        "Usage: {prog} <xyz_file> [--table <path>] [target_type] [--ring] [--no-fast] [--debug] [--arm-type] [--output <path>] [--batch <size>] [--threads <n>]"
     );
     eprintln!();
     eprintln!("  xyz_file:        path to XYZ coordinate file (single or multi-frame)");
@@ -19,6 +19,7 @@ fn print_usage(prog: &str) {
     eprintln!("  --ring:          treat chain as a closed ring");
     eprintln!("  --no-fast:       disable KMT simplification (enabled by default)");
     eprintln!("  --debug:         enable debug output");
+    eprintln!("  --arm-type:      calculate arm type for 3_1 knots (requires target_type '3_1')");
     eprintln!("  --output <path>: write knot_index log (default: knot_index.txt)");
     eprintln!("  --batch <size>:  frames per batch (default: 64)");
     eprintln!("  --threads <n>:   rayon worker thread count (default: auto)");
@@ -50,12 +51,14 @@ fn run_cli(args: &[String], prog: &str) {
     let mut batch_size: Option<usize> = None;
     let mut num_threads: Option<usize> = None;
     let mut table_path: Option<String> = None;
+    let mut check_arm_type = false;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
             "--ring" => config.is_ring = true,
             "--no-fast" => config.faster = false,
             "--debug" => config.debug = true,
+            "--arm-type" => check_arm_type = true,
             "--table" => {
                 i += 1;
                 table_path = Some(require_arg(args, i, "--table"));
@@ -142,8 +145,13 @@ fn run_cli(args: &[String], prog: &str) {
 
     let out_file = File::create(&output_path).expect("failed to create output file");
     let mut writer = BufWriter::new(out_file);
-    writeln!(writer, "# frame\tknottype\tknot_start\tknot_end\tknot_size")
-        .expect("write header failed");
+    if check_arm_type {
+        writeln!(writer, "# frame\tknottype\tknot_start\tknot_end\tknot_size\tarm_type")
+            .expect("write header failed");
+    } else {
+        writeln!(writer, "# frame\tknottype\tknot_start\tknot_end\tknot_size")
+            .expect("write header failed");
+    }
 
     let t0 = Instant::now();
     let mut n_knotted = 0usize;
@@ -155,6 +163,7 @@ fn run_cli(args: &[String], prog: &str) {
         &table,
         &config,
         target_type.as_deref(),
+        check_arm_type,
         batch_size,
         |batch_results| {
             for r in batch_results {
@@ -174,12 +183,21 @@ fn run_cli(args: &[String], prog: &str) {
                 } else {
                     &r.knot_type
                 };
-                writeln!(
-                    writer,
-                    "{}\t{}\t{}\t{}\t{}",
-                    r.frame, ktype, r.knot_start, r.knot_end, r.knot_size
-                )
-                .expect("write failed");
+                if check_arm_type {
+                    writeln!(
+                        writer,
+                        "{}\t{}\t{}\t{}\t{}\t{}",
+                        r.frame, ktype, r.knot_start, r.knot_end, r.knot_size, r.arm_type.as_deref().unwrap_or("none")
+                    )
+                    .expect("write failed");
+                } else {
+                    writeln!(
+                        writer,
+                        "{}\t{}\t{}\t{}\t{}",
+                        r.frame, ktype, r.knot_start, r.knot_end, r.knot_size
+                    )
+                    .expect("write failed");
+                }
             }
 
             if first_frame.is_none() && !batch_results.is_empty() && batch_results[0].frame == 0 {
@@ -201,6 +219,13 @@ fn run_cli(args: &[String], prog: &str) {
                         "Knot core: [{}, {}], size = {}",
                         r.knot_start, r.knot_end, r.knot_size
                     );
+                    if check_arm_type && r.knot_type == "3_1" {
+                        if let Some(ref arm_type) = r.arm_type {
+                            println!("Arm type: {}", arm_type);
+                        } else {
+                            println!("Arm type: none");
+                        }
+                    }
                 }
             }
         }
