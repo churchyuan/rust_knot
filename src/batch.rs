@@ -79,10 +79,12 @@ pub fn process_frame(
             Ok(core) if core.matched => {
                 if check_arm_type && search == "3_1" {
                     let mut core_points = Vec::new();
+                    let mut core_indices = Vec::new();
                     let n = points.len() as i32;
                     let mut curr = core.left;
                     loop {
                         core_points.push(points[curr as usize]);
+                        core_indices.push(curr as usize);
                         if curr == core.right {
                             break;
                         }
@@ -94,7 +96,7 @@ pub fn process_frame(
                         ..config.clone()
                     };
 
-                    match get_31knot_arm_type(&core_points, table, &open_config) {
+                    match get_31knot_arm_type(points, &core_points, &core_indices, table, &open_config) {
                         Ok(arm) => arm_type = Some(arm),
                         Err(e) => warnings.push(format!("arm type calculation failed: {e}")),
                     }

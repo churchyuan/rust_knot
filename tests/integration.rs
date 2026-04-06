@@ -143,24 +143,25 @@ fn test_31knot_arm_type() {
     assert!(core.matched);
 
     let mut core_points = Vec::new();
+    let mut core_indices = Vec::new();
     let n = points.len() as i32;
     let mut curr = core.left;
     loop {
         core_points.push(points[curr as usize]);
+        core_indices.push(curr as usize);
         if curr == core.right {
             break;
         }
         curr = (curr + 1) % n;
     }
 
-    // Evaluate arm type as an open chain (the core itself is open)
     let open_config = KnotConfig {
         is_ring: false,
         faster: true,
         ..config
     };
 
-    let arm_type = get_31knot_arm_type(&core_points, &table, &open_config).expect("arm type calculation failed");
+    let arm_type = get_31knot_arm_type(&points, &core_points, &core_indices, &table, &open_config).expect("arm type calculation failed");
     
     assert!(arm_type == "two-arm" || arm_type == "three-arm");
 }
