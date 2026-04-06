@@ -155,31 +155,17 @@ pub fn get_31knot_arm_type(
         (locs1[1], locs3[1]),
     ];
 
-    // Helper closure: checks if Crossing 2 passes through the given path interval
-    let passes_through = |path: (usize, usize), l2: [usize; 2]| -> bool {
-        let min_p = path.0.min(path.1);
-        let max_p = path.0.max(path.1);
+    // Calculate path lengths (physical distance based on original chain indices)
+    let mut paths_with_dist: Vec<((usize, usize), usize)> = paths
+        .into_iter()
+        .map(|(a, b)| ((a, b), a.abs_diff(b)))
+        .collect();
 
-        let l2a = l2[0];
-        let l2b = l2[1];
+    // Sort by distance (shortest first)
+    paths_with_dist.sort_by_key(|k| k.1);
 
-        (l2a > min_p && l2a < max_p) || (l2b > min_p && l2b < max_p)
-    };
-
-    // Filter paths that do NOT pass through Crossing 2
-    let mut outer_paths = Vec::new();
-    for &path in &paths {
-        if !passes_through(path, locs2) {
-            outer_paths.push(path);
-        }
-    }
-
-    if outer_paths.len() != 2 {
-        return Err(KnotError::DataParse(format!(
-            "Expected exactly 2 outer paths, found {}",
-            outer_paths.len()
-        )));
-    }
+    // Pick the 2 shortest paths
+    let outer_paths = vec![paths_with_dist[0].0, paths_with_dist[1].0];
 
     // 10. Extract points to form the closed curve polygon (projected to 2D)
     // The points in `points` argument correspond to the original indices 0..n.
