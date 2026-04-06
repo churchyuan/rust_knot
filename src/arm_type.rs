@@ -7,6 +7,23 @@ use crate::kmt::kmt_open_chain_with_indices;
 use crate::knottype::get_knottype;
 use crate::point::Point3;
 
+/// Helper function to check if a 2D point is inside a polygon using ray-casting.
+fn is_point_in_polygon(point: &[f64; 2], polygon: &[[f64; 2]]) -> bool {
+    let mut inside = false;
+    let mut j = polygon.len() - 1;
+    for i in 0..polygon.len() {
+        let pi = &polygon[i];
+        let pj = &polygon[j];
+        if (pi[1] > point[1]) != (pj[1] > point[1])
+            && point[0] < (pj[0] - pi[0]) * (point[1] - pi[1]) / (pj[1] - pi[1]) + pi[0]
+        {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
+}
+
 /// Determine whether a 3_1 knot is a "two-arm" or "three-arm" state.
 /// This algorithm should be run on the knot core (an open chain) of a 3_1 knot.
 pub fn get_31knot_arm_type(
@@ -138,20 +155,7 @@ pub fn get_31knot_arm_type(
         (locs1[1], locs3[1]),
     ];
 
-    // Calculate path lengths (physical distance based on original chain indices)
-    let mut paths_with_dist: Vec<((usize, usize), usize)> = paths
-        .into_iter()
-        .map(|(a, b)| ((a, b), a.abs_diff(b)))
-        .collect();
-
-    // Sort by distance (shortest first)
-    paths_with_dist.sort_by_key(|k| k.1);
-
-    let shortest_1 = paths_with_dist[0].0;
-    let shortest_2 = paths_with_dist[1].0;
-
-    // Helper closure: checks if Crossing 2 passes through the given path
-    // Meaning at least one of its two locations lies within the interval of the path.
+    // Helper closure: checks if Crossing 2 passes through the given path interval
     let passes_through = |path: (usize, usize), l2: [usize; 2]| -> bool {
         let min_p = path.0.min(path.1);
         let max_p = path.0.max(path.1);
@@ -159,14 +163,64 @@ pub fn get_31knot_arm_type(
         let l2a = l2[0];
         let l2b = l2[1];
 
-        (l2a >= min_p && l2a <= max_p) || (l2b >= min_p && l2b <= max_p)
+        (l2a > min_p && l2a < max_p) || (l2b > min_p && l2b < max_p)
     };
 
-    let pass1 = passes_through(shortest_1, locs2);
-    let pass2 = passes_through(shortest_2, locs2);
+    // Filter paths that do NOT pass through Crossing 2
+    let mut outer_paths = Vec::new();
+    for &path in &paths {
+        if !passes_through(path, locs2) {
+            outer_paths.push(path);
+        }
+    }
 
-    // 10. Decide arm type
-    if pass1 && pass2 {
+    if outer_paths.len() != 2 {
+        return Err(KnotError::DataParse(format!(
+            "Expected exactly 2 outer paths, found {}",
+            outer_paths.len()
+        )));
+    }
+
+    // 10. Extract points to form the closed curve polygon (projected to 2D)
+    // The points in `points` argument correspond to the original indices 0..n.
+    // Ensure we don't go out of bounds.
+    let max_idx = points.len() - 1;
+
+    let path1_start = outer_paths[0].0.min(outer_paths[0].1).min(max_idx);
+    let path1_end = outer_paths[0].0.max(outer_paths[0].1).min(max_idx);
+    let path2_start = outer_paths[1].0.min(outer_paths[1].1).min(max_idx);
+    let path2_end = outer_paths[1].0.max(outer_paths[1].1).min(max_idx);
+
+    let mut polygon_points_3d = Vec::new();
+    // Add first path points
+    for idx in path1_start..=path1_end {
+        polygon_points_3d.push(points[idx]);
+    }
+    // Add second path points in reverse order to form a closed loop
+    for idx in (path2_start..=path2_end).rev() {
+        polygon_points_3d.push(points[idx]);
+    }
+
+    // Reorient the polygon points exactly as we did for the full chain
+    find_max_span(&mut polygon_points_3d);
+
+    // Extract 2D projection (first two coordinates after find_max_span)
+    let polygon_2d: Vec<[f64; 2]> = polygon_points_3d.iter().map(|p| [p[0], p[1]]).collect();
+
+    // Reorient the original crossing 2 points as well
+    let mut p2a = points[locs2[0].min(max_idx)];
+    let mut p2b = points[locs2[1].min(max_idx)];
+    let mut c2_points = vec![p2a, p2b];
+    find_max_span(&mut c2_points);
+
+    let pt2a_2d = [c2_points[0][0], c2_points[0][1]];
+    let pt2b_2d = [c2_points[1][0], c2_points[1][1]];
+
+    // Check if both crossing 2 locations are inside the polygon
+    let in_a = is_point_in_polygon(&pt2a_2d, &polygon_2d);
+    let in_b = is_point_in_polygon(&pt2b_2d, &polygon_2d);
+
+    if in_a && in_b {
         Ok("two-arm".to_string())
     } else {
         Ok("three-arm".to_string())
