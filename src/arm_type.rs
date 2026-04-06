@@ -155,17 +155,50 @@ pub fn get_31knot_arm_type(
         (locs1[1], locs3[1]),
     ];
 
-    // Calculate path lengths (physical distance based on original chain indices)
-    let mut paths_with_dist: Vec<((usize, usize), usize)> = paths
-        .into_iter()
-        .map(|(a, b)| ((a, b), a.abs_diff(b)))
-        .collect();
+    // Helper closure: checks if Crossing 2 passes through the given path interval
+    // A path goes from index A to index B (or B to A).
+    // It "passes through" crossing 2 if either of crossing 2's locations lies strictly inside the path's index range.
+    // We use strictly exclusive bounds because the endpoints themselves ARE crossings 1 and 3,
+    // and crossing 2 cannot be identical to crossing 1 or 3 in terms of physical location.
+    let passes_through = |path: (usize, usize), l2: [usize; 2]| -> bool {
+        let min_p = path.0.min(path.1);
+        let max_p = path.0.max(path.1);
 
-    // Sort by distance (shortest first)
-    paths_with_dist.sort_by_key(|k| k.1);
+        let l2a = l2[0];
+        let l2b = l2[1];
 
-    // Pick the 2 shortest paths
-    let outer_paths = vec![paths_with_dist[0].0, paths_with_dist[1].0];
+        (l2a > min_p && l2a < max_p) || (l2b > min_p && l2b < max_p)
+    };
+
+    // Filter paths that do NOT pass through Crossing 2
+    let mut outer_paths = Vec::new();
+    for &path in &paths {
+        if !passes_through(path, locs2) {
+            outer_paths.push(path);
+        }
+    }
+
+    // Fallback: If strict inequality doesn't work (e.g. KMT squash), try inclusive bounds
+    if outer_paths.len() != 2 {
+        let passes_through_inclusive = |path: (usize, usize), l2: [usize; 2]| -> bool {
+            let min_p = path.0.min(path.1);
+            let max_p = path.0.max(path.1);
+            (l2[0] >= min_p && l2[0] <= max_p) || (l2[1] >= min_p && l2[1] <= max_p)
+        };
+        outer_paths.clear();
+        for &path in &paths {
+            if !passes_through_inclusive(path, locs2) {
+                outer_paths.push(path);
+            }
+        }
+    }
+
+    if outer_paths.len() != 2 {
+        return Err(KnotError::DataParse(format!(
+            "Expected exactly 2 outer paths, found {}",
+            outer_paths.len()
+        )));
+    }
 
     // 10. Extract points to form the closed curve polygon (projected to 2D)
     // The points in `points` argument correspond to the original indices 0..n.
@@ -194,8 +227,8 @@ pub fn get_31knot_arm_type(
     let polygon_2d: Vec<[f64; 2]> = polygon_points_3d.iter().map(|p| [p[0], p[1]]).collect();
 
     // Reorient the original crossing 2 points as well
-    let mut p2a = points[locs2[0].min(max_idx)];
-    let mut p2b = points[locs2[1].min(max_idx)];
+    let p2a = points[locs2[0].min(max_idx)];
+    let p2b = points[locs2[1].min(max_idx)];
     let mut c2_points = vec![p2a, p2b];
     find_max_span(&mut c2_points);
 
