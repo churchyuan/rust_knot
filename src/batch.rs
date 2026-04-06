@@ -172,7 +172,14 @@ where
         batch.push(points);
 
         if batch.len() >= batch_size {
-            let results = process_batch(&batch, frame_offset, table, config, target_type, check_arm_type);
+            let results = process_batch(
+                &batch,
+                frame_offset,
+                table,
+                config,
+                target_type,
+                check_arm_type,
+            );
             on_batch(&results);
             frame_offset += batch.len();
             batch.clear();
@@ -181,7 +188,14 @@ where
 
     // Process remaining frames
     if !batch.is_empty() {
-        let results = process_batch(&batch, frame_offset, table, config, target_type, check_arm_type);
+        let results = process_batch(
+            &batch,
+            frame_offset,
+            table,
+            config,
+            target_type,
+            check_arm_type,
+        );
         on_batch(&results);
         frame_offset += batch.len();
     }
@@ -200,7 +214,16 @@ fn process_batch(
     batch
         .par_iter()
         .enumerate()
-        .map(|(i, points)| process_frame(offset + i, points, table, config, target_type, check_arm_type))
+        .map(|(i, points)| {
+            process_frame(
+                offset + i,
+                points,
+                table,
+                config,
+                target_type,
+                check_arm_type,
+            )
+        })
         .collect()
 }
 

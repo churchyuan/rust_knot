@@ -24,7 +24,12 @@ pub fn get_31knot_arm_type(
     }
 
     // 2. Initialize points with their original indices
-    let mut working: Vec<(Point3, usize)> = points.iter().copied().enumerate().map(|(i, p)| (p, i)).collect();
+    let mut working: Vec<(Point3, usize)> = points
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(i, p)| (p, i))
+        .collect();
 
     // 3. Apply KMT simplification while tracking original indices
     kmt_open_chain_with_indices(&mut working);
@@ -69,9 +74,9 @@ pub fn get_31knot_arm_type(
 
     // Collect all unique crossings (segment pairs)
     let mut crossing_pairs: Vec<(usize, usize)> = Vec::new();
-    for i in 0..num_segs {
-        for j in (i + 1)..num_segs {
-            if intersections[i][j].valid {
+    for (i, row) in intersections.iter().enumerate() {
+        for (j, inter) in row.iter().enumerate().skip(i + 1) {
+            if inter.valid {
                 crossing_pairs.push((i, j));
             }
         }

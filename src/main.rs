@@ -146,8 +146,11 @@ fn run_cli(args: &[String], prog: &str) {
     let out_file = File::create(&output_path).expect("failed to create output file");
     let mut writer = BufWriter::new(out_file);
     if check_arm_type {
-        writeln!(writer, "# frame\tknottype\tknot_start\tknot_end\tknot_size\tarm_type")
-            .expect("write header failed");
+        writeln!(
+            writer,
+            "# frame\tknottype\tknot_start\tknot_end\tknot_size\tarm_type"
+        )
+        .expect("write header failed");
     } else {
         writeln!(writer, "# frame\tknottype\tknot_start\tknot_end\tknot_size")
             .expect("write header failed");
@@ -187,7 +190,12 @@ fn run_cli(args: &[String], prog: &str) {
                     writeln!(
                         writer,
                         "{}\t{}\t{}\t{}\t{}\t{}",
-                        r.frame, ktype, r.knot_start, r.knot_end, r.knot_size, r.arm_type.as_deref().unwrap_or("none")
+                        r.frame,
+                        ktype,
+                        r.knot_start,
+                        r.knot_end,
+                        r.knot_size,
+                        r.arm_type.as_deref().unwrap_or("none")
                     )
                     .expect("write failed");
                 } else {
