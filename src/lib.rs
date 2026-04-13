@@ -17,7 +17,9 @@ pub mod python_module;
 // Re-export primary public API
 pub use alexander_table::AlexanderTable;
 pub use arm_type::get_31knot_arm_type;
-pub use batch::{process_frame, process_frames_parallel, process_frames_streaming, FrameResult};
+pub use batch::{
+    process_frame, process_frames_parallel, process_frames_streaming, FrameResult, InputFormat,
+};
 pub use config::KnotConfig;
 pub use error::{KnotError, Result};
 pub use io::{read_data_lammps, read_data_xyz, read_data_xyz_frames};

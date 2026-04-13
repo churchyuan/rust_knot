@@ -161,12 +161,11 @@ fn test_31knot_arm_type() {
         ..config
     };
 
-    let arm_type = get_31knot_arm_type(&points, &core_points, &core_indices, &table, &open_config).expect("arm type calculation failed");
-    
+    let arm_type = get_31knot_arm_type(&points, &core_points, &core_indices, &table, &open_config)
+        .expect("arm type calculation failed");
+
     assert!(arm_type == "two-arm" || arm_type == "three-arm");
 }
-
-
 
 #[test]
 fn test_notfound_uses_polynomial_as_knot_type() {

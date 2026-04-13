@@ -6,10 +6,16 @@ use crate::alexander_table::AlexanderTable;
 use crate::arm_type::get_31knot_arm_type;
 use crate::config::KnotConfig;
 use crate::error::KnotError;
-use crate::io::XyzFrameIter;
+use crate::io::{LammpsFrameIter, XyzFrameIter};
 use crate::knotsize::find_knot_core;
 use crate::knottype::get_knottype;
 use crate::point::Point3;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InputFormat {
+    Xyz,
+    Lammps,
+}
 
 /// Result of processing a single frame.
 #[derive(Clone, Debug)]
@@ -96,7 +102,13 @@ pub fn process_frame(
                         ..config.clone()
                     };
 
-                    match get_31knot_arm_type(points, &core_points, &core_indices, table, &open_config) {
+                    match get_31knot_arm_type(
+                        points,
+                        &core_points,
+                        &core_indices,
+                        table,
+                        &open_config,
+                    ) {
                         Ok(arm) => arm_type = Some(arm),
                         Err(e) => warnings.push(format!("arm type calculation failed: {e}")),
                     }
@@ -146,7 +158,7 @@ pub fn process_frames_parallel(
 /// Default batch size for streaming processing.
 const DEFAULT_BATCH_SIZE: usize = 64;
 
-/// Streaming batch processor: reads `batch_size` frames at a time from an XYZ
+/// Streaming batch processor: reads `batch_size` frames at a time from an input
 /// reader, processes each batch in parallel, and calls `on_batch` with results.
 ///
 /// Memory usage is bounded to `batch_size * points_per_frame`.
@@ -157,6 +169,7 @@ pub fn process_frames_streaming<R, F>(
     config: &KnotConfig,
     target_type: Option<&str>,
     check_arm_type: bool,
+    input_format: InputFormat,
     batch_size: Option<usize>,
     mut on_batch: F,
 ) -> crate::error::Result<usize>
@@ -164,17 +177,58 @@ where
     R: BufRead,
     F: FnMut(&[FrameResult]),
 {
+    match input_format {
+        InputFormat::Xyz => process_frames_from_iter(
+            XyzFrameIter::new(reader),
+            table,
+            config,
+            target_type,
+            check_arm_type,
+            batch_size,
+            &mut on_batch,
+        ),
+        InputFormat::Lammps => process_frames_from_iter(
+            LammpsFrameIter::new(reader),
+            table,
+            config,
+            target_type,
+            check_arm_type,
+            batch_size,
+            &mut on_batch,
+        ),
+    }
+}
+
+fn process_frames_from_iter<I, F>(
+    iter: I,
+    table: &AlexanderTable,
+    config: &KnotConfig,
+    target_type: Option<&str>,
+    check_arm_type: bool,
+    batch_size: Option<usize>,
+    on_batch: &mut F,
+) -> crate::error::Result<usize>
+where
+    I: IntoIterator<Item = crate::error::Result<Vec<Point3>>>,
+    F: FnMut(&[FrameResult]),
+{
     let batch_size = batch_size.unwrap_or(DEFAULT_BATCH_SIZE);
     let mut frame_offset = 0usize;
     let mut batch = Vec::with_capacity(batch_size);
-    let iter = XyzFrameIter::new(reader);
 
     for result in iter {
         let points = result?;
         batch.push(points);
 
         if batch.len() >= batch_size {
-            let results = process_batch(&batch, frame_offset, table, config, target_type, check_arm_type);
+            let results = process_batch(
+                &batch,
+                frame_offset,
+                table,
+                config,
+                target_type,
+                check_arm_type,
+            );
             on_batch(&results);
             frame_offset += batch.len();
             batch.clear();
@@ -183,7 +237,14 @@ where
 
     // Process remaining frames
     if !batch.is_empty() {
-        let results = process_batch(&batch, frame_offset, table, config, target_type, check_arm_type);
+        let results = process_batch(
+            &batch,
+            frame_offset,
+            table,
+            config,
+            target_type,
+            check_arm_type,
+        );
         on_batch(&results);
         frame_offset += batch.len();
     }
@@ -202,7 +263,16 @@ fn process_batch(
     batch
         .par_iter()
         .enumerate()
-        .map(|(i, points)| process_frame(offset + i, points, table, config, target_type, check_arm_type))
+        .map(|(i, points)| {
+            process_frame(
+                offset + i,
+                points,
+                table,
+                config,
+                target_type,
+                check_arm_type,
+            )
+        })
         .collect()
 }
 
