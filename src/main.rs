@@ -5,15 +5,18 @@ use std::time::Instant;
 
 use rayon::ThreadPoolBuilder;
 use rust_knot::alexander_table::AlexanderTable;
-use rust_knot::batch::process_frames_streaming;
+use rust_knot::batch::{process_frames_streaming, InputFormat};
 use rust_knot::config::KnotConfig;
 
 fn print_usage(prog: &str) {
     eprintln!(
-        "Usage: {prog} <xyz_file> [--table <path>] [target_type] [--ring] [--no-fast] [--debug] [--arm-type] [--output <path>] [--batch <size>] [--threads <n>]"
+        "Usage: {prog} <input_file> [--format <xyz|lammps>] [--table <path>] [target_type] [--ring] [--no-fast] [--debug] [--arm-type] [--output <path>] [--batch <size>] [--threads <n>]"
     );
     eprintln!();
-    eprintln!("  xyz_file:        path to XYZ coordinate file (single or multi-frame)");
+    eprintln!("  input_file:      path to XYZ or LAMMPS dump file (single or multi-frame)");
+    eprintln!(
+        "  --format <fmt>:  input format: 'xyz' or 'lammps' (auto-detect by extension if omitted)"
+    );
     eprintln!("  --table <path>:  Alexander polynomial table (default: built-in ≤9 crossings)");
     eprintln!("  target_type:     (optional) knot type to search for core, e.g. '3_1'");
     eprintln!("  --ring:          treat chain as a closed ring");
@@ -24,6 +27,10 @@ fn print_usage(prog: &str) {
     eprintln!("  --batch <size>:  frames per batch (default: 64)");
     eprintln!("  --threads <n>:   rayon worker thread count (default: auto)");
     eprintln!("  -h, --help:      show this message");
+    eprintln!();
+    eprintln!("Examples:");
+    eprintln!("  {prog} chain.xyz --ring 3_1");
+    eprintln!("  {prog} traj.lammpstrj --format lammps --ring 3_1 --arm-type");
 }
 
 fn require_arg(args: &[String], i: usize, flag: &str) -> String {
@@ -40,7 +47,7 @@ fn run_cli(args: &[String], prog: &str) {
         std::process::exit(if args.is_empty() { 1 } else { 0 });
     }
 
-    let xyz_path = &args[0];
+    let input_path = &args[0];
 
     let mut config = KnotConfig {
         faster: true,
@@ -52,6 +59,7 @@ fn run_cli(args: &[String], prog: &str) {
     let mut num_threads: Option<usize> = None;
     let mut table_path: Option<String> = None;
     let mut check_arm_type = false;
+    let mut input_format: Option<InputFormat> = None;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -59,6 +67,11 @@ fn run_cli(args: &[String], prog: &str) {
             "--no-fast" => config.faster = false,
             "--debug" => config.debug = true,
             "--arm-type" => check_arm_type = true,
+            "--format" => {
+                i += 1;
+                let val = require_arg(args, i, "--format");
+                input_format = Some(parse_input_format(&val));
+            }
             "--table" => {
                 i += 1;
                 table_path = Some(require_arg(args, i, "--table"));
@@ -128,11 +141,13 @@ fn run_cli(args: &[String], prog: &str) {
         t0.elapsed()
     );
 
-    let file = File::open(xyz_path).expect("failed to open XYZ file");
+    let input_format = input_format.unwrap_or_else(|| detect_input_format(input_path));
+    let file = File::open(input_path).expect("failed to open input file");
     let reader = BufReader::new(file);
 
     eprintln!(
-        "Config: is_ring={}, faster={}, extend_factor={}, num_rotations={}, batch_size={}, threads={}",
+        "Config: format={:?}, is_ring={}, faster={}, extend_factor={}, num_rotations={}, batch_size={}, threads={}",
+        input_format,
         config.is_ring,
         config.faster,
         config.extend_factor,
@@ -167,6 +182,7 @@ fn run_cli(args: &[String], prog: &str) {
         &config,
         target_type.as_deref(),
         check_arm_type,
+        input_format,
         batch_size,
         |batch_results| {
             for r in batch_results {
@@ -260,4 +276,24 @@ fn run_cli(args: &[String], prog: &str) {
 fn main() {
     let args: Vec<String> = env::args().collect();
     run_cli(&args[1..], &args[0]);
+}
+
+fn parse_input_format(value: &str) -> InputFormat {
+    match value.to_ascii_lowercase().as_str() {
+        "xyz" => InputFormat::Xyz,
+        "lammps" | "lmp" | "lammpstrj" | "dump" => InputFormat::Lammps,
+        _ => {
+            eprintln!("error: unsupported --format '{value}', expected 'xyz' or 'lammps'");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn detect_input_format(path: &str) -> InputFormat {
+    let lower = path.to_ascii_lowercase();
+    if lower.ends_with(".lammpstrj") || lower.ends_with(".lmp") || lower.ends_with(".dump") {
+        InputFormat::Lammps
+    } else {
+        InputFormat::Xyz
+    }
 }

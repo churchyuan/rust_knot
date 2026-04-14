@@ -111,6 +111,54 @@ impl<R: BufRead> Iterator for XyzFrameIter<R> {
     }
 }
 
+/// Lazy frame-by-frame iterator over a LAMMPS dump stream.
+/// Expects the standard repeated block:
+/// ITEM: TIMESTEP
+/// ...
+/// ITEM: NUMBER OF ATOMS
+/// N
+/// ITEM: BOX BOUNDS ...
+/// ...
+/// ITEM: ATOMS id type x y z
+/// ...
+pub struct LammpsFrameIter<R> {
+    reader: R,
+    line_buf: String,
+    done: bool,
+}
+
+impl<R: BufRead> LammpsFrameIter<R> {
+    pub fn new(reader: R) -> Self {
+        Self {
+            reader,
+            line_buf: String::new(),
+            done: false,
+        }
+    }
+}
+
+impl<R: BufRead> Iterator for LammpsFrameIter<R> {
+    type Item = Result<Vec<Point3>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.done {
+            return None;
+        }
+
+        match parse_lammps_frame(&mut self.reader, &mut self.line_buf) {
+            Ok(Some(points)) => Some(Ok(points)),
+            Ok(None) => {
+                self.done = true;
+                None
+            }
+            Err(err) => {
+                self.done = true;
+                Some(Err(err))
+            }
+        }
+    }
+}
+
 /// Read points from XYZ format.
 /// Format:
 /// ```text
@@ -178,62 +226,18 @@ pub fn read_data_xyz_frames<R: BufRead>(reader: &mut R) -> Result<Vec<Vec<Point3
 /// Expects: 3 header lines, then N, then 5 more header lines, then data.
 pub fn read_data_lammps<R: BufRead>(reader: &mut R) -> Result<Vec<Point3>> {
     let mut line = String::new();
+    parse_lammps_frame(reader, &mut line)?
+        .ok_or_else(|| KnotError::DataParse("no LAMMPS frame found".into()))
+}
 
-    // Skip first 3 lines
-    for _ in 0..3 {
-        line.clear();
-        if reader.read_line(&mut line).map_err(KnotError::Io)? == 0 {
-            return Err(KnotError::DataParse(
-                "unexpected EOF in LAMMPS header".into(),
-            ));
-        }
+/// Read all frames from a LAMMPS dump stream into memory.
+pub fn read_data_lammps_frames<R: BufRead>(reader: &mut R) -> Result<Vec<Vec<Point3>>> {
+    let mut frames = Vec::new();
+    let iter = LammpsFrameIter::new(reader);
+    for result in iter {
+        frames.push(result?);
     }
-
-    // Read N
-    line.clear();
-    reader.read_line(&mut line).map_err(KnotError::Io)?;
-    let n: usize = line
-        .trim()
-        .parse()
-        .map_err(|e| KnotError::DataParse(format!("invalid atom count: {e}")))?;
-
-    // Skip 5 more header lines (with the remaining part of the line after N + 5 more)
-    // Actually, the C++ reads one line that has N, then skips 6 lines total
-    // Let's match C++ which does: read N, then getline 6 times
-    for _ in 0..5 {
-        line.clear();
-        if reader.read_line(&mut line).map_err(KnotError::Io)? == 0 {
-            return Err(KnotError::DataParse(
-                "unexpected EOF in LAMMPS header".into(),
-            ));
-        }
-    }
-
-    let mut points = Vec::with_capacity(n);
-    for _ in 0..n {
-        line.clear();
-        reader.read_line(&mut line).map_err(KnotError::Io)?;
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() < 5 {
-            return Err(KnotError::DataParse(format!(
-                "LAMMPS data line too short: '{}'",
-                line.trim()
-            )));
-        }
-        // Format: id atom_type x y z
-        let x: f64 = parts[2]
-            .parse()
-            .map_err(|e| KnotError::DataParse(format!("bad x: {e}")))?;
-        let y: f64 = parts[3]
-            .parse()
-            .map_err(|e| KnotError::DataParse(format!("bad y: {e}")))?;
-        let z: f64 = parts[4]
-            .parse()
-            .map_err(|e| KnotError::DataParse(format!("bad z: {e}")))?;
-        points.push([x, y, z]);
-    }
-
-    Ok(points)
+    Ok(frames)
 }
 
 /// Write points in XYZ format.
@@ -313,4 +317,149 @@ mod tests {
         let empty_frames = read_data_xyz_frames(&mut empty_reader).unwrap();
         assert!(empty_frames.is_empty());
     }
+
+    #[test]
+    fn test_read_lammps_frames() {
+        let data = concat!(
+            "ITEM: TIMESTEP\n",
+            "0\n",
+            "ITEM: NUMBER OF ATOMS\n",
+            "2\n",
+            "ITEM: BOX BOUNDS ff ff ff\n",
+            "0 1\n",
+            "0 1\n",
+            "0 1\n",
+            "ITEM: ATOMS id type x y z\n",
+            "1 1 1.0 2.0 3.0\n",
+            "2 1 4.0 5.0 6.0\n",
+            "ITEM: TIMESTEP\n",
+            "1\n",
+            "ITEM: NUMBER OF ATOMS\n",
+            "1\n",
+            "ITEM: BOX BOUNDS ff ff ff\n",
+            "0 1\n",
+            "0 1\n",
+            "0 1\n",
+            "ITEM: ATOMS id type x y z\n",
+            "1 1 7.0 8.0 9.0\n"
+        );
+        let mut reader = Cursor::new(data);
+        let frames = read_data_lammps_frames(&mut reader).unwrap();
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0][0], [1.0, 2.0, 3.0]);
+        assert_eq!(frames[0][1], [4.0, 5.0, 6.0]);
+        assert_eq!(frames[1][0], [7.0, 8.0, 9.0]);
+    }
+}
+
+fn parse_lammps_frame<R: BufRead>(
+    reader: &mut R,
+    line: &mut String,
+) -> Result<Option<Vec<Point3>>> {
+    line.clear();
+    loop {
+        match reader.read_line(line).map_err(KnotError::Io)? {
+            0 => return Ok(None),
+            _ if !line.trim().is_empty() => break,
+            _ => line.clear(),
+        }
+    }
+
+    if line.trim() != "ITEM: TIMESTEP" {
+        return Err(KnotError::DataParse(format!(
+            "expected 'ITEM: TIMESTEP', got '{}'",
+            line.trim()
+        )));
+    }
+
+    line.clear();
+    if reader.read_line(line).map_err(KnotError::Io)? == 0 {
+        return Err(KnotError::DataParse(
+            "unexpected EOF after LAMMPS timestep header".into(),
+        ));
+    }
+
+    line.clear();
+    if reader.read_line(line).map_err(KnotError::Io)? == 0 {
+        return Err(KnotError::DataParse(
+            "unexpected EOF before atom-count header".into(),
+        ));
+    }
+    if line.trim() != "ITEM: NUMBER OF ATOMS" {
+        return Err(KnotError::DataParse(format!(
+            "expected 'ITEM: NUMBER OF ATOMS', got '{}'",
+            line.trim()
+        )));
+    }
+
+    line.clear();
+    if reader.read_line(line).map_err(KnotError::Io)? == 0 {
+        return Err(KnotError::DataParse("unexpected EOF at atom count".into()));
+    }
+    let n: usize = line
+        .trim()
+        .parse()
+        .map_err(|e| KnotError::DataParse(format!("invalid atom count: {e}")))?;
+
+    line.clear();
+    if reader.read_line(line).map_err(KnotError::Io)? == 0 {
+        return Err(KnotError::DataParse(
+            "unexpected EOF before box-bounds header".into(),
+        ));
+    }
+    if !line.trim().starts_with("ITEM: BOX BOUNDS") {
+        return Err(KnotError::DataParse(format!(
+            "expected 'ITEM: BOX BOUNDS...', got '{}'",
+            line.trim()
+        )));
+    }
+
+    for _ in 0..3 {
+        line.clear();
+        if reader.read_line(line).map_err(KnotError::Io)? == 0 {
+            return Err(KnotError::DataParse("unexpected EOF in box bounds".into()));
+        }
+    }
+
+    line.clear();
+    if reader.read_line(line).map_err(KnotError::Io)? == 0 {
+        return Err(KnotError::DataParse(
+            "unexpected EOF before atom data header".into(),
+        ));
+    }
+    if !line.trim().starts_with("ITEM: ATOMS") {
+        return Err(KnotError::DataParse(format!(
+            "expected 'ITEM: ATOMS...', got '{}'",
+            line.trim()
+        )));
+    }
+
+    let mut points = Vec::with_capacity(n);
+    for _ in 0..n {
+        line.clear();
+        if reader.read_line(line).map_err(KnotError::Io)? == 0 {
+            return Err(KnotError::DataParse(
+                "unexpected EOF in atom coordinates".into(),
+            ));
+        }
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() < 5 {
+            return Err(KnotError::DataParse(format!(
+                "LAMMPS data line too short: '{}'",
+                line.trim()
+            )));
+        }
+        let x: f64 = parts[2]
+            .parse()
+            .map_err(|e| KnotError::DataParse(format!("bad x: {e}")))?;
+        let y: f64 = parts[3]
+            .parse()
+            .map_err(|e| KnotError::DataParse(format!("bad y: {e}")))?;
+        let z: f64 = parts[4]
+            .parse()
+            .map_err(|e| KnotError::DataParse(format!("bad z: {e}")))?;
+        points.push([x, y, z]);
+    }
+
+    Ok(Some(points))
 }
